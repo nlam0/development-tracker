@@ -19,9 +19,9 @@ import os
 import sys
 
 import psycopg
-import requests
 from dotenv import load_dotenv
 
+from pipeline.socrata import fetch_all
 from pipeline.transforms.bbl import normalize_bbl_pluto
 
 PLUTO_DATASET = "64uk-42ks"
@@ -31,32 +31,30 @@ BBOX = {"lat_min": 40.704, "lat_max": 40.726, "lon_min": -74.003, "lon_max": -73
 
 
 def fetch_pluto_centroids(app_token: str | None) -> list[tuple[str, float, float]]:
-    params = {
-        "$select": "bbl,latitude,longitude",
-        "$where": (
+    """Fetch every PLUTO centroid in the study-area bounding box.
+
+    Paged through pipeline/socrata.py rather than issuing a single capped
+    request: an earlier version used a bare $limit=10000, which would have
+    silently truncated the study area -- and so silently shrunk it -- the
+    moment the box held more lots than the cap.
+    """
+    out = []
+    for row in fetch_all(
+        PLUTO_DATASET,
+        select="bbl,latitude,longitude",
+        where=(
             f"borocode='1' AND latitude between {BBOX['lat_min']} and {BBOX['lat_max']} "
             f"AND longitude between {BBOX['lon_min']} and {BBOX['lon_max']} "
             "AND latitude IS NOT NULL AND longitude IS NOT NULL"
         ),
-        "$limit": 10000,
-    }
-    headers = {"X-App-Token": app_token} if app_token else {}
-    resp = requests.get(
-        f"https://data.cityofnewyork.us/resource/{PLUTO_DATASET}.json",
-        params=params,
-        headers=headers,
-        timeout=30,
-    )
-    resp.raise_for_status()
-    rows = resp.json()
-    out = []
-    for row in rows:
+        order="bbl",
+        app_token=app_token,
+    ):
         raw_bbl = row.get("bbl")
         lat, lon = row.get("latitude"), row.get("longitude")
         if not raw_bbl or lat is None or lon is None:
             continue
-        bbl = normalize_bbl_pluto(raw_bbl)
-        out.append((bbl, float(lat), float(lon)))
+        out.append((normalize_bbl_pluto(raw_bbl), float(lat), float(lon)))
     return out
 
 

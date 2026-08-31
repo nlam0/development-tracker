@@ -11,6 +11,11 @@ from collections.abc import Iterable
 
 from psycopg.types.json import Jsonb
 
+STALE_RUN_MESSAGE = (
+    "superseded by a later run; this run never reported completion "
+    "(process killed, timed out, or lost its connection)"
+)
+
 
 def start_run(conn, source: str, *, cursor_start: str | None = None) -> int:
     """Insert a 'running' ingestion_runs row and commit it immediately.
@@ -18,8 +23,22 @@ def start_run(conn, source: str, *, cursor_start: str | None = None) -> int:
     Committed on its own, ahead of any fetch/transform work, so a run that
     crashes mid-fetch still leaves durable evidence it started (Risk R8: a
     cron job that fails silently is worse than no cron job).
+
+    A process killed outright -- a GitHub Actions timeout, an OOM -- never
+    reaches finish_run, so its row would otherwise sit at 'running' forever
+    and read as healthy. Any such orphan for this source is closed out as
+    failed here, on the reasoning that a new run starting means no earlier
+    one is still live.
     """
     with conn.cursor() as cur:
+        cur.execute(
+            """
+            UPDATE ingestion_runs
+            SET status = 'failed', completed_at = now(), error_message = %s
+            WHERE source = %s AND status = 'running';
+            """,
+            (STALE_RUN_MESSAGE, source),
+        )
         cur.execute(
             """
             INSERT INTO ingestion_runs (source, cursor_start, status)
@@ -68,6 +87,20 @@ def finish_run(
         )
 
 
+def purge_rejected_for_source(conn, source: str) -> int:
+    """Clear a full-reload source's previous rejects. Returns rows deleted.
+
+    Only correct for sources that re-fetch their whole record set every run
+    (PLUTO): the current run's rejects are then the complete reject set, and
+    keeping earlier ones would re-log the same malformed record every day
+    forever. Incremental sources (DOB NOW, DOB legacy) must NOT call this --
+    their earlier rejects concern records the current run never refetched.
+    """
+    with conn.cursor() as cur:
+        cur.execute("DELETE FROM rejected_records WHERE source = %s;", (source,))
+        return cur.rowcount
+
+
 def record_rejected(conn, run_id: int, source: str, rows: Iterable[tuple[str, dict]]) -> None:
     """Log malformed records rather than silently dropping them (PRD §14)."""
     rows = list(rows)
@@ -111,11 +144,41 @@ PARCEL_COLUMNS = [
 ]
 
 
+def _count_upsert_results(cur) -> tuple[int, int]:
+    """Tally RETURNING (xmax = 0) flags across an executemany result set.
+
+    executemany(returning=True) leaves one result set per input row, walked
+    with nextset(). `xmax = 0` distinguishes a fresh insert from a conflict
+    that took the DO UPDATE branch.
+    """
+    inserted = updated = 0
+    while True:
+        if cur.pgresult is not None and cur.rowcount and cur.rowcount > 0:
+            row = cur.fetchone()
+            if row is not None:
+                if row[0]:
+                    inserted += 1
+                else:
+                    updated += 1
+        if not cur.nextset():
+            break
+    return inserted, updated
+
+
 def upsert_parcels(conn, rows: Iterable[dict]) -> tuple[int, int]:
     """Upsert into parcels on the bbl primary key. Returns (inserted, updated).
 
     Also derives `geom` from latitude/longitude and sets `retrieved_at`
     server-side, so callers only supply the PARCEL_COLUMNS fields.
+
+    Batched through executemany rather than a per-row execute loop: against
+    Supabase the round trip per row dominates everything else (~72s vs ~0.2s
+    for 2,000 rows), which matters once the legacy-permit backfill runs tens
+    of thousands of rows through this same pattern.
+
+    Callers must pass at most one row per conflict key -- two rows with the
+    same bbl in a single batch raise CardinalityViolation ("ON CONFLICT DO
+    UPDATE command cannot affect row a second time").
     """
     rows = list(rows)
     if not rows:
@@ -134,13 +197,6 @@ def upsert_parcels(conn, rows: Iterable[dict]) -> tuple[int, int]:
         ON CONFLICT (bbl) DO UPDATE SET {set_clause}, geom = EXCLUDED.geom, retrieved_at = now()
         RETURNING (xmax = 0) AS inserted;
     """
-    inserted = updated = 0
     with conn.cursor() as cur:
-        for row in rows:
-            cur.execute(sql, row)
-            (was_insert,) = cur.fetchone()
-            if was_insert:
-                inserted += 1
-            else:
-                updated += 1
-    return inserted, updated
+        cur.executemany(sql, rows, returning=True)
+        return _count_upsert_results(cur)

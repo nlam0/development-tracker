@@ -13,11 +13,18 @@ Usage:
 
 import os
 import sys
+from collections.abc import Iterable
 
 import psycopg
 from dotenv import load_dotenv
 
-from pipeline.load import finish_run, record_rejected, start_run, upsert_parcels
+from pipeline.load import (
+    finish_run,
+    purge_rejected_for_source,
+    record_rejected,
+    start_run,
+    upsert_parcels,
+)
 from pipeline.socrata import fetch_all
 from pipeline.transforms.bbl import normalize_bbl_pluto, parse_bbl
 
@@ -104,6 +111,48 @@ def _transform(raw: dict, bbl: str, neighborhood: str) -> dict:
     }
 
 
+def process_records(
+    records: Iterable[dict], study_area_bbls: dict[str, str]
+) -> tuple[dict[str, dict], list[tuple[str, dict]], int]:
+    """Validate, normalize, and filter raw PLUTO rows to study-area parcels.
+
+    Returns (rows_by_bbl, rejected, received). Pure -- no network or DB -- so
+    the reject paths are unit-testable.
+
+    Every per-record failure becomes a rejected_records entry rather than an
+    exception: PRD §14 requires malformed records be logged, not dropped, and
+    one unparseable numeric among 42,000 rows must not fail an entire run.
+    Keying by BBL also guarantees at most one row per conflict key, which the
+    batched upsert requires.
+    """
+    received = 0
+    rejected: list[tuple[str, dict]] = []
+    rows_by_bbl: dict[str, dict] = {}
+
+    for raw in records:
+        received += 1
+        raw_bbl = raw.get("bbl")
+        if not raw_bbl:
+            rejected.append(("missing bbl", raw))
+            continue
+        try:
+            bbl = normalize_bbl_pluto(raw_bbl)
+        except (ValueError, TypeError):
+            rejected.append(("unparseable bbl", raw))
+            continue
+
+        neighborhood = study_area_bbls.get(bbl)
+        if neighborhood is None:
+            continue  # outside the study area -- filtered, not an error
+
+        try:
+            rows_by_bbl[bbl] = _transform(raw, bbl, neighborhood)
+        except (ValueError, TypeError) as exc:
+            rejected.append((f"unparseable field: {exc}", raw))
+
+    return rows_by_bbl, rejected, received
+
+
 def main() -> int:
     load_dotenv()
     db_url = os.environ.get("SUPABASE_DB_URL_DIRECT")
@@ -118,33 +167,16 @@ def main() -> int:
             study_area_bbls = _load_study_area_bbls(conn)
             print(f"study area has {len(study_area_bbls)} resolved BBLs")
 
-            received = 0
-            rejected: list[tuple[str, dict]] = []
-            rows_by_bbl: dict[str, dict] = {}
-
-            for raw in fetch_all(
-                DATASET_ID,
-                select=",".join(FIELDS),
-                where=f"borocode='1' AND version='{PINNED_VERSION}'",
-                order="bbl",
-                app_token=app_token,
-            ):
-                received += 1
-                raw_bbl = raw.get("bbl")
-                if not raw_bbl:
-                    rejected.append(("missing bbl", raw))
-                    continue
-                try:
-                    bbl = normalize_bbl_pluto(raw_bbl)
-                except (ValueError, TypeError):
-                    rejected.append(("unparseable bbl", raw))
-                    continue
-
-                neighborhood = study_area_bbls.get(bbl)
-                if neighborhood is None:
-                    continue  # outside the study area -- filtered, not an error
-
-                rows_by_bbl[bbl] = _transform(raw, bbl, neighborhood)
+            rows_by_bbl, rejected, received = process_records(
+                fetch_all(
+                    DATASET_ID,
+                    select=",".join(FIELDS),
+                    where=f"borocode='1' AND version='{PINNED_VERSION}'",
+                    order="bbl",
+                    app_token=app_token,
+                ),
+                study_area_bbls,
+            )
 
             if received == 0:
                 raise RuntimeError(
@@ -154,6 +186,10 @@ def main() -> int:
                 )
 
             inserted, updated = upsert_parcels(conn, rows_by_bbl.values())
+            # PLUTO refetches its whole record set every run, so this run's
+            # rejects supersede the last one's -- otherwise a daily cron
+            # re-logs the same malformed rows forever.
+            purge_rejected_for_source(conn, SOURCE)
             record_rejected(conn, run_id, SOURCE, rejected)
             finish_run(
                 conn,

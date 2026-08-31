@@ -2,7 +2,7 @@
 
 Companion to `PRD.md`. The PRD defines *what* and *why*; this document defines *how*, in what order, and what is likely to go wrong. Section references like (PRD §8) point back to the spec.
 
-**Status:** M0-M3 complete. M0 scaffolding and M1's study areas are committed and pushed (`origin/main`); M1's resolved BBL set is 1,944 parcels (Chinatown 501, Two Bridges 522, Lower East Side 921). M2 has applied the full §3 schema to Supabase -- 9 application tables with all constraints and indexes verified. M3 has loaded all 1,944 study-area parcels from PLUTO into `parcels`, verified idempotent. See each milestone section below for details.
+**Status:** M0-M3 complete, plus a post-M3 data-integrity audit (findings folded into R1, R12, and open decisions D6/D7 below). M0 scaffolding and M1's study areas are committed and pushed (`origin/main`); M1's resolved BBL set is 1,944 parcels (Chinatown 501, Two Bridges 522, Lower East Side 921). M2 has applied the full §3 schema to Supabase -- 9 application tables with all constraints and indexes verified. M3 has loaded all 1,944 study-area parcels from PLUTO into `parcels`, verified idempotent. See each milestone section below for details.
 
 All dataset IDs, field names, and data-quality findings below were verified against the live NYC Open Data API on 2026-08-31. See [Appendix A](#appendix-a--verified-source-reconnaissance) for the raw findings.
 
@@ -133,6 +133,16 @@ PLUTO is the parcel backbone every other source joins against, so it lands befor
 
 Run against the live Supabase instance: first run received 42,504 Manhattan PLUTO rows, matched all 1,944 study-area BBLs, inserted 1,944, rejected 0. Re-running (idempotency check, PRD §16) received the same 42,504 rows, inserted 0, updated all 1,944 — row count unchanged, exactly the exit criterion. Verified directly against the database (not just adapter output): `parcels` row count equals `study_area_bbls` row count; per-neighborhood counts match M1's exactly (Chinatown 501, Two Bridges 522, Lower East Side 921); zero null `geom`; zero malformed BBLs; `pluto_version` is uniformly `'26v2'`; both `ingestion_runs` rows show `status='success'` with `records_rejected=0`. `tests/test_pluto_ingestion.py` (DB-dependent, skips gracefully without credentials — reconfirmed by temporarily hiding `.env`) and `tests/test_bbl_transforms.py` (pure, covers all four normalization shapes plus the `parse_bbl` round trip) encode these checks for every future run.
 
+**Post-M3 audit.** A read-only integrity pass over the loaded data and the sources M4 will touch found one blocking issue and several fixed defects.
+
+Fixed in code: `resolve.py` paged through `pipeline/socrata.py` instead of a bare `$limit=10000` (4,246 of a 10,000 cap — the study area would have silently *shrunk* on crossing it); per-record rejection in `pipeline/sources/pluto.py` via a new pure, unit-testable `process_records()`, so one unparseable value routes that record to `rejected_records` instead of failing the whole 42,504-row run (PRD §14); `start_run()` now closes out orphaned `'running'` rows, which a killed process would otherwise leave looking healthy forever (Risk R8); `purge_rejected_for_source()` stops a daily cron re-logging identical rejects indefinitely (full-reload sources only — incremental sources must not use it); `parcels.neighborhood` gained `ON UPDATE CASCADE` (migration `0010`) so a study area can be renamed rather than needing data surgery; and `upsert_parcels()` moved from a per-row execute loop to a batched `executemany(returning=True)` — measured at ~0.2s vs ~72s per 2,000 rows against Supabase, which is what makes M8's 20-30k-row legacy backfill practical.
+
+Verified behavior-preserving: the paged resolve returns the identical 4,246 candidates and identical per-area counts, and the batched upsert still reports 0 inserted / 1,944 updated on a re-run.
+
+Blocking M4: the natural key in §4/R1 was measurably wrong — see R1 for the numbers. Not fixed in code, because M4's loader doesn't exist yet; the corrected key is now recorded in both places.
+
+Still open: D6 and D7 in §6 (what counts as "in the study area"), which are research judgments, not implementation choices.
+
 ### M4 — DOB NOW ingestion → `permits`
 The primary source (PRD §6). Incremental sync on `approved_date`. Handle the sentinel-value and null-BBL cases from Risk R1/R2. Write `ingestion_runs` rows on every execution including failures.
 
@@ -168,7 +178,7 @@ Postgres on Supabase. BBL is `CHAR(10)` everywhere — a normalized string, neve
 -- Researcher-defined boundaries (PRD §5). Explicitly not official geography.
 CREATE TABLE study_areas (
   id           SERIAL PRIMARY KEY,
-  name         TEXT NOT NULL UNIQUE,          -- 'Chinatown', 'Two Bridges', 'LES (adjacent)'
+  name         TEXT NOT NULL UNIQUE,          -- 'Chinatown', 'Two Bridges', 'Lower East Side'
   geom         GEOMETRY(MultiPolygon, 4326) NOT NULL,
   definition_note TEXT NOT NULL,              -- surfaced verbatim on /methodology
   created_at   TIMESTAMPTZ NOT NULL DEFAULT now()
@@ -193,7 +203,7 @@ CREATE TABLE parcels (
   block            INTEGER  NOT NULL,
   lot              INTEGER  NOT NULL,
   address          TEXT,
-  neighborhood     TEXT REFERENCES study_areas(name),
+  neighborhood     TEXT REFERENCES study_areas(name) ON UPDATE CASCADE,
   latitude         DOUBLE PRECISION,
   longitude        DOUBLE PRECISION,
   geom             GEOMETRY(Point, 4326),
@@ -337,7 +347,7 @@ One adapter per source (PRD §8). Each owns exactly one dataset's quirks and emi
 
 | Source | Dataset | Cursor (incremental) | Natural key | BBL strategy |
 |---|---|---|---|---|
-| DOB NOW | `rbx6-tga4` | `approved_date` (`calendar_date`) | `job_filing_number` + `work_permit` + `sequence_number` | `bbl` field, numeric → zero-pad to 10 |
+| DOB NOW | `rbx6-tga4` | `approved_date` (`calendar_date`) | `job_filing_number` + `work_permit` + `sequence_number` + `work_type` + `tracking_number` (see R1) | `bbl` field, numeric → zero-pad to 10 |
 | DOB legacy | `ipu4-2q9a` | `dobrundate` (`calendar_date`) | `permit_si_no` | `bbl` field; fallback boro-name→code + padded block/lot |
 | PLUTO | `64uk-42ks` (pinned `26v2`) | none — versioned snapshot, full reload | `bbl` | `bbl` is float-formatted text; truncate decimal |
 | ACRIS | `bnx9-e6tj` (master), `8h5j-fqxa` (legals), `636b-3b5g` (parties), `7isb-wh4c` (codes) | `modified_date` on master | `document_id` + block + lot | from **legals** only; master has no BBL |
@@ -369,7 +379,20 @@ Ordered by expected cost. R1–R5 are confirmed present in the live data, not hy
 ### R1 — DOB NOW's filing number is not a reliable key *(confirmed, high)*
 315 records citywide have the literal string `"Permit is no"` in `job_filing_number` (with `work_permit` = `"Permit is not yet issued"`), and 212 more have it null. The field is truncated sentinel text for approved-but-unissued permits, not an identifier. Keying on it alone would collapse hundreds of distinct permits into one row and silently destroy data.
 
-*Mitigation:* composite external ID of `job_filing_number` + `work_permit` + `sequence_number`; when any component is a sentinel or null, fall back to a stable hash of `(bbl, work_type, approved_date, job_description)`. Assert in tests that the study-area external-ID count equals the distinct record count. Route unresolvable records to `rejected_records`.
+**Measured against the study area (audit, post-M3).** The composite key originally proposed here — `job_filing_number` + `work_permit` + `sequence_number` — is *itself* insufficient, and would have caused exactly the failure this risk was written to prevent. Across the 22,960 DOB NOW permits in the study-area bounding box:
+
+| Key | Distinct keys | Colliding keys | Records merged | Collisions losing real data |
+|---|---|---|---|---|
+| `filing` + `work_permit` + `sequence` (as originally planned) | 21,033 | 1,772 | 1,927 | **1,771** |
+| + `work_type` | 22,949 | 11 | 11 | 10 |
+| + `work_type` + `filing_reason` | 22,954 | 6 | 6 | 5 |
+| **+ `work_type` + `tracking_number`** | 22,957 | 3 | 3 | **0** |
+
+These are not duplicate rows — only **one** byte-identical duplicate exists in the whole set. The collisions are genuinely distinct permits: one filing/permit/sequence triple carries both a `'Supported Scaffold'` and a `'Sidewalk Shed'` permit, and the collisions remaining after adding `work_type` are **permit renewals** — same filing and work type, different `issued_date`/`expired_date`, separated only by `tracking_number`. The three residual collisions under the full key lose no data (identical rows), which is precisely what an idempotent upsert should collapse.
+
+*Mitigation:* external ID = `job_filing_number` + `work_permit` + `sequence_number` + `work_type` + `tracking_number`; when any component is a sentinel or null, fall back to a stable hash of `(bbl, work_type, approved_date, job_description)` — the `"Permit is no"` sentinel rows were confirmed to carry *differing* BBL/BIN/lat-long, so they are distinct permits needing the hash, not duplicates. `tracking_number` was non-null on all 22,960 study-area records. Assert in tests that the study-area external-ID count equals the count of *distinct records* (not of raw records — source-level exact duplicates legitimately collapse). Route unresolvable records to `rejected_records`.
+
+**This also constrains the upsert mechanics.** `ON CONFLICT DO UPDATE` raises `CardinalityViolation` ("cannot affect row a second time") when one batch contains two rows sharing a conflict key — verified directly against Postgres. So M4 must dedupe by external ID in Python before upserting, exactly as `pipeline/sources/pluto.py` keys by BBL. Under the *wrong* key that dedupe silently discards 1,927 real permits instead of erroring, which is why the key above must land before M4's loader is written.
 
 ### R2 — Missing BBLs on ~0.6% of permits *(confirmed, medium)*
 320 of 54,346 Manhattan DOB NOW records have a null BBL. The FK to `parcels` will reject them, and they are exactly the records most likely to be interesting (new construction on irregular lots).
@@ -423,6 +446,21 @@ The chosen vintages straddle a decennial geography change: ACS5 2014 and 2019 ar
 
 ---
 
+
+### R12 — The BBL allowlist under-covers the study area *(confirmed, medium-high)*
+The study-area filter is a BBL allowlist derived from PLUTO **centroids**, so a lot with no centroid, no PLUTO row, or a condo unit-lot BBL cannot enter it — and every permit on such a lot is then dropped at the study-area filter stage, silently and without a `rejected_records` entry.
+
+Measured (audit, post-M3): of the 8,721 DOB NOW permits falling spatially inside the study-area polygons, **272 (3.1%) would be dropped** by the BBL filter — 73 with a null BBL (R2), 54 on condo unit lots (R4, which affects DOB and not only ACRIS), and 145 on lots absent from `parcels`. Two distinct causes:
+
+- **Centroid-less PLUTO lots.** 398 Manhattan lots have no lat/long, and `resolve.py` filters `latitude IS NOT NULL`, so they can never be resolved into any study area. **10 sit on study-area blocks**, including `1003540001` and `1003520001` (ESSEX STREET — the Essex Crossing footprint), `1003419001`/`1003419058`/`1003419070` (GRAND STREET), and `1002791108` (11 EAST BROADWAY, a Two Bridges condo unit lot). These skew heavily toward air-rights (`9xxx`) and condo lots — disproportionately the parcels where the largest development happens.
+- **Lots absent from PLUTO entirely.** 7 distinct in-polygon BBLs carry permits but have no `parcels` row at all — merged or demapped lots. Since lot mergers are a signature of redevelopment, this bias grows worse the further back the legacy backfill reaches.
+
+Verified clean in the same audit: **zero** reverse-gap (no allowlisted BBL falls outside the polygons), **zero** FK violations against the current `parcels`, and **zero** unparseable BBLs across all 22,960 records.
+
+*Mitigation:* pending — see the two open decisions in §6. Whatever is chosen must be stated on `/methodology`, since it defines what "in the study area" means for every number the thesis reports.
+
+---
+
 ## 6. Decisions
 
 Resolved 2026-08-31. Nothing here blocks implementation.
@@ -434,6 +472,15 @@ Resolved 2026-08-31. Nothing here blocks implementation.
 | D3 | PLUTO version | Pin **`26v2`** (only published version). Version bumps are a deliberate manual step, never automatic. |
 | D4 | ACRIS document types | **`DEED`, `DEEDO`, `CORRD`** (conveyances) + **`MTGE`, `ASST`, `SAT`** (mortgage lifecycle). Leases and RPTT excluded from V1. |
 | D5 | ACS vintages | **ACS5 2014, 2019, 2024** — 5-year spacing, non-overlapping samples. Tract-vintage handling per Risk R11. |
+
+### Open decisions (raised by the post-M3 audit, needed before M4)
+
+Both concern what "in the study area" means, so both are research judgments rather than implementation choices, and both belong on `/methodology` once settled (see Risk R12).
+
+| # | Decision | Options |
+|---|---|---|
+| D6 | **Should the study area include lots PLUTO gives no centroid for?** 10 known study-area lots, incl. the Essex Crossing parcels and a Two Bridges condo lot. | (a) Leave excluded, and state the exclusion on `/methodology`; (b) admit them by block membership — if other lots on the block resolve to a study area, so does this one; (c) admit them via true lot polygons (MapPLUTO shapefile) instead of centroids, which fixes the root cause but adds a non-Socrata data dependency. |
+| D7 | **Should the permit study-area filter be BBL-only, or BBL ∪ point-in-polygon?** BBL-only currently drops 272 in-polygon permits (3.1%). | (a) BBL-only — every permit ties to a known parcel, cleanest joins, but silently omits condo/vanished-lot activity; (b) BBL ∪ spatial — capture any permit whose own lat/long falls inside a study-area polygon, storing it with a null `bbl` and an explicit `bbl_confidence`-style marker, so nothing inside the boundary goes missing at the cost of permits that no parcel page can show. |
 
 ### Still to specify (during the milestone that needs it, not before)
 
