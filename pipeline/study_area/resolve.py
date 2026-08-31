@@ -7,8 +7,9 @@ materialized into study_area_bbls -- the single BBL set every later
 ingestion adapter's "filter to study area" stage reads from (PRD §8).
 
 This is a one-off geometry-resolution step, not the recurring PLUTO
-ingestion adapter (that's pipeline/sources/pluto.py, built in M3) -- it
-only pulls the two columns needed to test containment.
+ingestion adapter (that's pipeline/sources/pluto.py, M3) -- it only pulls
+the two columns needed to test containment, via pipeline/transforms/bbl.py
+for normalization like every other adapter.
 
 Usage:
     python -m pipeline.study_area.resolve
@@ -20,6 +21,8 @@ import sys
 import psycopg
 import requests
 from dotenv import load_dotenv
+
+from pipeline.transforms.bbl import normalize_bbl_pluto
 
 PLUTO_DATASET = "64uk-42ks"
 # Bounding box covering all three study areas with margin (verified against
@@ -52,11 +55,7 @@ def fetch_pluto_centroids(app_token: str | None) -> list[tuple[str, float, float
         lat, lon = row.get("latitude"), row.get("longitude")
         if not raw_bbl or lat is None or lon is None:
             continue
-        # Inline PLUTO-only normalization for this one-off resolution step.
-        # M3 introduces pipeline/transforms/bbl.py as the shared normalizer
-        # for all four source formats (IMPLEMENTATION_PLAN.md Risk R3) --
-        # switch this to import it once that lands.
-        bbl = str(int(float(raw_bbl))).zfill(10)
+        bbl = normalize_bbl_pluto(raw_bbl)
         out.append((bbl, float(lat), float(lon)))
     return out
 

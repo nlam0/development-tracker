@@ -2,7 +2,7 @@
 
 Lower Manhattan Development Tracker began as a research tool for studying neighborhood change in Chinatown and Two Bridges. NYC development information is spread across several independently structured public datasets, making repeated parcel-level research cumbersome. The project combines permitting, land-use, property, and demographic records into a single research interface and automatically monitors new development activity.
 
-**Status:** M0 (foundation), M1 (study-area definition), and M2 (schema and migrations) complete. See `IMPLEMENTATION_PLAN.md` for the full build plan and milestone sequence.
+**Status:** M0 (foundation), M1 (study-area definition), M2 (schema and migrations), and M3 (PLUTO ingestion) complete. See `IMPLEMENTATION_PLAN.md` for the full build plan and milestone sequence.
 
 ## Documents
 
@@ -48,6 +48,8 @@ python scripts/migrate.py    # apply pending SQL migrations from db/migrations/
 
 python -m pipeline.study_area.load_boundaries   # load study areas into Postgres
 python -m pipeline.study_area.resolve           # derive the study-area BBL set (needs SOCRATA_APP_TOKEN)
+
+python -m pipeline.run --source pluto           # load study-area parcels from PLUTO
 
 pytest                       # run tests
 ruff check .                 # lint
