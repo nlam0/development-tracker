@@ -60,7 +60,15 @@ function writeAll(entries: WatchlistEntry[]): void {
 type Listener = () => void;
 const listeners = new Set<Listener>();
 
+// useSyncExternalStore requires getSnapshot to return a cached, stable
+// reference when nothing has changed -- a fresh array (even with
+// identical contents) on every call reads as "changed" on every render
+// and triggers React's infinite-loop guard ("The result of getSnapshot
+// should be cached"). This cache is invalidated only on an actual write.
+let cachedWatchlist: WatchlistEntry[] | null = null;
+
 function notify(): void {
+  cachedWatchlist = null;
   listeners.forEach((listener) => listener());
 }
 
@@ -70,7 +78,10 @@ function subscribe(listener: Listener): () => void {
 }
 
 export function getWatchlist(): WatchlistEntry[] {
-  return readAll().sort((a, b) => b.addedAt.localeCompare(a.addedAt));
+  if (cachedWatchlist === null) {
+    cachedWatchlist = readAll().sort((a, b) => b.addedAt.localeCompare(a.addedAt));
+  }
+  return cachedWatchlist;
 }
 
 export function isWatched(type: WatchlistEntryType, value: string): boolean {
