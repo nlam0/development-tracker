@@ -37,6 +37,10 @@ yarn-error.log*
 # vercel
 .vercel
 
+# generated on `npm install` (see scripts/copy-maplibre-worker.mjs) --
+# always copied fresh from the installed maplibre-gl version, not committed
+/public/maplibre/
+
 # typescript
 *.tsbuildinfo
 next-env.d.ts

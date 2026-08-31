@@ -34,6 +34,16 @@ const MAP_STYLE_URL = "https://tiles.openfreemap.org/styles/positron";
 const STUDY_AREA_CENTER: [number, number] = [-73.987, 40.715];
 const INITIAL_ZOOM = 14.5;
 
+// maplibre-gl decodes vector tiles in a dedicated module Worker, whose URL
+// it computes at runtime via a bundler-relative import. Turbopack doesn't
+// resolve that correctly for this package -- the request falls through to
+// Next's page router and comes back as HTML, which the browser refuses to
+// run as a module script. Pointing it at a plain static copy (see
+// scripts/copy-maplibre-worker.mjs, run on `npm install`) sidesteps the
+// bundler entirely. Must run before any Map is constructed, so it's set
+// at module scope rather than inside the component.
+maplibregl.setWorkerUrl("/maplibre/maplibre-gl-worker.mjs");
+
 // maplibre-gl's published types don't export an expression type to
 // annotate this with -- it's passed straight into a paint spec below,
 // which is where MapLibre itself validates its shape at runtime.
