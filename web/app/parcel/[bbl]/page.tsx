@@ -37,8 +37,14 @@ export default async function ParcelPage(props: PageProps<"/parcel/[bbl]">) {
               type="parcel"
               value={parcel.bbl}
               label={parcel.address ?? parcel.bbl}
+              actionLabel="this parcel"
             />
-            <WatchlistButton type="block" value={block} label={`Block ${block}`} />
+            <WatchlistButton
+              type="block"
+              value={block}
+              label={`Block ${block}`}
+              actionLabel={`block ${block}`}
+            />
           </div>
         </div>
       </div>
