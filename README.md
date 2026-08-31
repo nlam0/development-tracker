@@ -2,7 +2,7 @@
 
 Lower Manhattan Development Tracker began as a research tool for studying neighborhood change in Chinatown and Two Bridges. NYC development information is spread across several independently structured public datasets, making repeated parcel-level research cumbersome. The project combines permitting, land-use, property, and demographic records into a single research interface and automatically monitors new development activity.
 
-**Status:** M0 (foundation), M1 (study-area definition), M2 (schema and migrations), and M3 (PLUTO ingestion) complete, plus a post-M3 data-integrity audit. The study area resolves to 1,954 parcels across the three neighborhoods. See `IMPLEMENTATION_PLAN.md` for the full build plan and milestone sequence.
+**Status:** M0 (foundation), M1 (study-area definition), M2 (schema and migrations), M3 (PLUTO ingestion), and M4 (DOB NOW ingestion) complete, plus a post-M3 data-integrity audit. The study area resolves to 1,954 parcels across the three neighborhoods, carrying 10,364 DOB NOW permits. See `IMPLEMENTATION_PLAN.md` for the full build plan and milestone sequence.
 
 ## Documents
 
@@ -50,6 +50,7 @@ python -m pipeline.study_area.load_boundaries   # load study areas into Postgres
 python -m pipeline.study_area.resolve           # derive the study-area BBL set (needs SOCRATA_APP_TOKEN)
 
 python -m pipeline.run --source pluto           # load study-area parcels from PLUTO
+python -m pipeline.run --source dob_now         # load study-area permits from DOB NOW
 
 pytest                       # run tests
 ruff check .                 # lint
@@ -67,4 +68,4 @@ npm run lint
 
 ## Limitations
 
-Study-area boundaries (Chinatown, Two Bridges, adjacent Lower East Side) are researcher-defined, not official administrative geography — see `/methodology` (once built) and `IMPLEMENTATION_PLAN.md` §6 (decision D1) for how they were drawn. Which parcels fall inside those boundaries is also a judgment: most are resolved by point-in-polygon against parcel centroids, while lots PLUTO gives no centroid for are admitted by block membership, a weaker claim recorded per row (decision D6). Other known data-quality caveats (BBL format divergence, ACRIS condo-lot matching, census tract vintage discontinuities) are documented in `IMPLEMENTATION_PLAN.md` §5.
+Study-area boundaries (Chinatown, Two Bridges, adjacent Lower East Side) are researcher-defined, not official administrative geography — see `/methodology` (once built) and `IMPLEMENTATION_PLAN.md` §6 (decision D1) for how they were drawn. Which parcels fall inside those boundaries is also a judgment: most are resolved by point-in-polygon against parcel centroids, while lots PLUTO gives no centroid for are admitted by block membership, a weaker claim recorded per row (decision D6). The same is true of permits: most are matched to the study area by their parcel's BBL, but 279 of 10,364 have no BBL the allowlist can reach (a null BBL, a condo unit lot, or a merged/demapped lot) and are matched instead by their own point falling inside a study-area polygon (decision D7) — such a permit carries a null `bbl` and appears in the feed and on the map, but not on any parcel page, since there is no parcel to attach it to. Other known data-quality caveats (BBL format divergence, ACRIS condo-lot matching, census tract vintage discontinuities) are documented in `IMPLEMENTATION_PLAN.md` §5.

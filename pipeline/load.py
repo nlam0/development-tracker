@@ -206,3 +206,63 @@ def upsert_parcels(conn, rows: Iterable[dict]) -> tuple[int, int]:
     with conn.cursor() as cur:
         cur.executemany(sql, rows, returning=True)
         return _count_upsert_results(cur)
+
+
+PERMIT_COLUMNS = [
+    "source",
+    "external_id",
+    "bbl",
+    "bin",
+    "address",
+    "filing_number",
+    "permit_type",
+    "work_type",
+    "category",
+    "filing_reason",
+    "status",
+    "description",
+    "estimated_cost",
+    "approved_date",
+    "issued_date",
+    "expired_date",
+    "event_date",
+    "latitude",
+    "longitude",
+    "owner_name",
+    "neighborhood",
+    "study_area_match",
+]
+
+
+def upsert_permits(conn, rows: Iterable[dict]) -> tuple[int, int]:
+    """Upsert into permits on the (source, external_id) natural key.
+
+    Mirrors upsert_parcels: derives geom from latitude/longitude with casts
+    on the STRICT PostGIS constructors (a bare null placeholder fails
+    Postgres type inference under executemany -- see upsert_parcels), sets
+    retrieved_at server-side, and expects `raw` as a psycopg Jsonb value
+    already present on each row dict.
+
+    Callers must pass at most one row per (source, external_id) -- two rows
+    sharing a conflict key in one batch raise CardinalityViolation.
+    """
+    rows = list(rows)
+    if not rows:
+        return 0, 0
+    cols = [*PERMIT_COLUMNS, "raw"]
+    placeholders = ", ".join(f"%({c})s" for c in cols)
+    update_cols = [c for c in cols if c not in ("source", "external_id")]
+    set_clause = ", ".join(f"{c} = EXCLUDED.{c}" for c in update_cols)
+    sql = f"""
+        INSERT INTO permits ({", ".join(cols)}, geom, retrieved_at)
+        VALUES ({placeholders},
+                ST_SetSRID(
+                    ST_MakePoint(%(longitude)s::float8, %(latitude)s::float8), 4326),
+                now())
+        ON CONFLICT (source, external_id) DO UPDATE SET {set_clause}, geom = EXCLUDED.geom,
+            retrieved_at = now()
+        RETURNING (xmax = 0) AS inserted;
+    """
+    with conn.cursor() as cur:
+        cur.executemany(sql, rows, returning=True)
+        return _count_upsert_results(cur)

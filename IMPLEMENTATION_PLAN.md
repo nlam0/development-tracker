@@ -2,7 +2,7 @@
 
 Companion to `PRD.md`. The PRD defines *what* and *why*; this document defines *how*, in what order, and what is likely to go wrong. Section references like (PRD §8) point back to the spec.
 
-**Status:** M0-M3 complete, plus a post-M3 data-integrity audit (findings folded into R1 and R12; decisions D6 and D7 resolved and implemented). The study area resolves to **1,954 parcels** (Chinatown 501, Two Bridges 523, Lower East Side 930), all loaded into `parcels`. M0 scaffolding and M1's study areas are committed and pushed (`origin/main`); M1's resolved BBL set is 1,944 parcels (Chinatown 501, Two Bridges 522, Lower East Side 921). M2 has applied the full §3 schema to Supabase -- 9 application tables with all constraints and indexes verified. M3 has loaded all 1,944 study-area parcels from PLUTO into `parcels`, verified idempotent. See each milestone section below for details.
+**Status:** M0-M4 complete, plus a post-M3 data-integrity audit (findings folded into R1 and R12; decisions D6 and D7 resolved and implemented). The study area resolves to **1,954 parcels** (Chinatown 501, Two Bridges 523, Lower East Side 930), all loaded into `parcels`. M4 has loaded **10,364 study-area DOB NOW permits** into `permits` (10,085 by BBL allowlist, 279 by D7(b) spatial match), verified idempotent. M0 scaffolding and M1's study areas are committed and pushed (`origin/main`); M1's resolved BBL set is 1,944 parcels (Chinatown 501, Two Bridges 522, Lower East Side 921). M2 has applied the full §3 schema to Supabase -- 9 application tables with all constraints and indexes verified. M3 has loaded all 1,944 study-area parcels from PLUTO into `parcels`, verified idempotent. See each milestone section below for details.
 
 All dataset IDs, field names, and data-quality findings below were verified against the live NYC Open Data API on 2026-08-31. See [Appendix A](#appendix-a--verified-source-reconnaissance) for the raw findings.
 
@@ -141,7 +141,7 @@ Verified behavior-preserving: the paged resolve returns the identical 4,246 cand
 
 Blocking M4: the natural key in §4/R1 was measurably wrong — see R1 for the numbers. Not fixed in code, because M4's loader doesn't exist yet; the corrected key is now recorded in both places.
 
-Resolved since: D6(b) and D7(b) in §6. D6(b) is implemented — `resolve.py` admits centroid-less lots by unambiguous block membership, recorded in a new `study_area_bbls.resolution_method` column (migration `0011`); all 10 study-area lots were admitted with zero ambiguous blocks, and the allowlist moved from 1,944 to 1,954. D7(b)'s schema landed (`permits.study_area_match` + `permits.neighborhood`, migration `0012`); its adapter logic belongs to M4.
+Resolved since: D6(b) and D7(b) in §6, both now implemented — see M4. D6(b) — `resolve.py` admits centroid-less lots by unambiguous block membership, recorded in a new `study_area_bbls.resolution_method` column (migration `0011`); all 10 study-area lots were admitted with zero ambiguous blocks, and the allowlist moved from 1,944 to 1,954. D7(b) — `pipeline/sources/dob_now.py` implements the BBL-then-spatial precedence against `permits.study_area_match` + `permits.neighborhood` (migration `0012`), loading 279 spatially-matched permits M4 would otherwise have dropped.
 
 Admitting the D6(b) lots immediately surfaced a latent bug in the new batched upsert: those lots have no coordinates, and under `executemany` the statement is prepared once, so an uncast null placeholder fails Postgres type inference ("could not determine data type of parameter"). The `CASE` guard around the geometry was dropped in favour of casts on strict PostGIS constructors, and `tests/test_pluto_ingestion.py` now covers the null-coordinate path directly.
 
@@ -149,6 +149,13 @@ Admitting the D6(b) lots immediately surfaced a latent bug in the new batched up
 The primary source (PRD §6). Incremental sync on `approved_date`. Handle the sentinel-value and null-BBL cases from Risk R1/R2. Write `ingestion_runs` rows on every execution including failures.
 
 **Exit:** study-area permits loaded and joined to `parcels`; running the job twice produces zero net new rows (this is the PRD §16 idempotency criterion, proven by test, not assertion).
+
+**Done.** `pipeline/sources/dob_now.py` loaded **10,364 study-area permits**: 10,085 by BBL allowlist, 279 by D7(b) point-in-polygon spatial match (bbl null, `study_area_match='spatial'`) -- recovering the R12 gap, and more of it than the pre-implementation estimate (251), since the real adapter also catches spatially-matchable permits the audit's bbox-only measurement didn't select for. 21 of the BBL-matched permits land on D6(b) block-resolved lots (including 140 Essex Street), confirming that decision pays off beyond M3. 0 rejected; idempotent (`inserted 0, updated 10364` on a second run); 0 FK violations; every row has a non-null `event_date` and a `category` in `{new_building, alteration, demolition, other}`.
+
+Two deviations from this section's original one-liner, both found while building the adapter rather than planned in advance:
+
+- **Category source.** `rbx6-tga4`'s `work_type` is a construction *discipline* (Plumbing, Sidewalk Shed, ...), not a new-building/alteration/demolition classification -- confirmed by querying its 21 distinct values directly, none of which is "New Building." That classification lives on the *job filing* the permit is issued under, in a second DOB NOW dataset (`w9ak-ipjd`, "DOB NOW: Build – Job Application Filings") as `job_type`, joined back by `job_filing_number`. M4 fetches both datasets -- a second, chunked, IN-list-filtered request restricted to the filing numbers already present in the fetched permits -- and maps `job_type` through `CATEGORY_MAP` in `pipeline/sources/dob_now.py`. §3's design note describing a `work_type` → category mapping is superseded by this.
+- **Full reload, not incremental.** This section's "incremental sync on `approved_date`" is not what got built. Every run re-fetches the study area's current DOB NOW state in full (BBL-allowlist chunks unioned with the same bounding box `resolve.py` uses) rather than resuming from a cursor. Reasons found while building it: a permit's status changes after it first appears (Issued → Signed-off) and a pure append-only cursor sync would never see the update; new spatial-only matches (R12) require re-scanning the bounding box regardless of cursor position; and study-area volume (~27k candidate records) makes a full reload cheap. Idempotent upsert makes this safe, proven the same way as M3.
 
 ### M5 — Read API
 FastAPI endpoints per PRD §11. Build `filters.py` first: `/api/activity` and `/api/map` must share one filter grammar, because the PRD requires filters to update feed and map simultaneously (PRD §7B). Cursor pagination on the feed.
@@ -337,7 +344,7 @@ CREATE TABLE rejected_records (
 **Design notes**
 
 - `event_date` exists because the feed is chronological across heterogeneous sources (PRD §7A). DOB NOW uses `issued_date`, falling back to `approved_date`; legacy uses `issuance_date`; ACRIS uses `recorded_date`. Without one canonical sort column, every feed query becomes a `COALESCE` over source-specific columns.
-- `category` is the canonical new building / alteration / demolition classification the map colors by (PRD §7B). DOB NOW `work_type` and legacy `job_type` (A1/A2/A3/NB/DM) map into it in the adapters. Raw values are preserved alongside.
+- `category` is the canonical new building / alteration / demolition classification the map colors by (PRD §7B). Legacy `job_type` (A1/A2/A3/NB/DM) maps into it directly. DOB NOW's own `work_type` does **not** — it's a construction discipline (Plumbing, Sidewalk Shed, ...), confirmed by querying its 21 distinct values, none of which is "New Building." `category` for DOB NOW instead comes from `job_type` on the *job filing* the permit was issued under (a second DOB NOW dataset, `w9ak-ipjd`, joined by `job_filing_number`) — found while building M4, see that section. Raw `work_type` is preserved alongside regardless.
 - `raw JSONB` preserves the source record so a mapping bug is fixable by reprocessing rather than refetching.
 - `bbl_confidence` on `property_records` records *how* a document was attached to a parcel, so the methodology page and UI can be honest about condo rollups (Risk R4).
 - `UNIQUE (source, external_id)` on both fact tables is the idempotency mechanism — all writes go through `INSERT ... ON CONFLICT (source, external_id) DO UPDATE`.
@@ -355,7 +362,7 @@ One adapter per source (PRD §8). Each owns exactly one dataset's quirks and emi
 
 | Source | Dataset | Cursor (incremental) | Natural key | BBL strategy |
 |---|---|---|---|---|
-| DOB NOW | `rbx6-tga4` | `approved_date` (`calendar_date`) | `job_filing_number` + `work_permit` + `sequence_number` + `work_type` + `tracking_number` (see R1) | `bbl` field, numeric → zero-pad to 10 |
+| DOB NOW | `rbx6-tga4` (permits) + `w9ak-ipjd` (job filings, for `category` only — see M4) | none — M4 does a full reload every run, not a cursor sync (see M4) | `job_filing_number` + `work_permit` + `sequence_number` + `work_type` + `tracking_number` (see R1) | `bbl` field, numeric → zero-pad to 10, or point-in-polygon (D7(b)) |
 | DOB legacy | `ipu4-2q9a` | `dobrundate` (`calendar_date`) | `permit_si_no` | `bbl` field; fallback boro-name→code + padded block/lot |
 | PLUTO | `64uk-42ks` (pinned `26v2`) | none — versioned snapshot, full reload | `bbl` | `bbl` is float-formatted text; truncate decimal |
 | ACRIS | `bnx9-e6tj` (master), `8h5j-fqxa` (legals), `636b-3b5g` (parties), `7isb-wh4c` (codes) | `modified_date` on master | `document_id` + block + lot | from **legals** only; master has no BBL |
@@ -363,7 +370,7 @@ One adapter per source (PRD §8). Each owns exactly one dataset's quirks and emi
 
 **Per-source rules**
 
-- **DOB NOW** — the primary source; build it first and most carefully. `estimated_job_costs` is `text`, not numeric. `bbl` is `number`, so it must be integer-cast before string conversion or it arrives as `1.012730012E9`. Filter server-side with `$where` on the study-area BBL set, batched (URL length limits force chunking of large `IN` lists).
+- **DOB NOW** — the primary source; build it first and most carefully. `estimated_job_costs` is `text`, not numeric. `bbl` is `number`, so it must be integer-cast before string conversion or it arrives as `1.012730012E9`. Filter server-side with `$where` on the study-area BBL set, batched (URL length limits force chunking of large `IN` lists). **Two datasets, not one** (found while building M4): `rbx6-tga4` carries the permits themselves but not a new-building/alteration/demolition classification; `category` comes from `job_type` on `w9ak-ipjd` (DOB NOW's job-filing dataset), joined back by `job_filing_number` and fetched in its own chunked pass restricted to filing numbers already seen. See M4 for the full account and the resulting scope deviations (category source, full reload instead of a cursor sync).
 - **DOB legacy** — the historical record for everything before DOB NOW's 2016-06-14 start. **Backfill scope: all available history** (decision D2). Manhattan-wide this is 1.62M rows, but the study area is ~1–2% of Manhattan, so the realistic load is ~20–30k rows — cheap enough that a full baseline beats an arbitrary cutoff for longitudinal work. Its date fields are `text` in `MM/DD/YYYY` format, so server-side date range filtering is impossible; `dobrundate` is the only real cursor. Parse dates in the adapter, never in SQL. Run as a one-time backfill, then daily incremental on `dobrundate`.
 - **PLUTO** — a periodic versioned republication, not a stream. Treat as full reload into a staging table, then swap; record `pluto_version`. **Pinned to `26v2`** (the only currently published version); version bumps are a deliberate manual step, never automatic, so a new release cannot silently move parcel attributes mid-research (decision D3).
 - **ACRIS** — a normalized multi-table system, unavoidably a two-stage fetch: query **legals** by study-area borough/block/lot to get `document_id`s, then fetch **master** for those IDs. Never scan master directly (4.2M mortgages, 3.6M deeds citywide). **V1 document set (decision D4): conveyances `DEED`, `DEEDO`, `CORRD`; mortgage lifecycle `MTGE`, `ASST`, `SAT`.** Conveyances answer who is buying and selling; the mortgage lifecycle often signals a redevelopment plan before any permit is filed. Lease types (`LEAS`, `AL&R`) and transfer-tax filings (`RPTT`) are excluded from V1 — uneven coverage and duplicate-looking feed events respectively. `doc_type` codes resolve to labels via `7isb-wh4c`, where the field is `doc__type` / `doc__type_description` (double underscore).
@@ -402,10 +409,14 @@ These are not duplicate rows — only **one** byte-identical duplicate exists in
 
 **This also constrains the upsert mechanics.** `ON CONFLICT DO UPDATE` raises `CardinalityViolation` ("cannot affect row a second time") when one batch contains two rows sharing a conflict key — verified directly against Postgres. So M4 must dedupe by external ID in Python before upserting, exactly as `pipeline/sources/pluto.py` keys by BBL. Under the *wrong* key that dedupe silently discards 1,927 real permits instead of erroring, which is why the key above must land before M4's loader is written.
 
+*Implemented (M4).* `external_id()` in `pipeline/sources/dob_now.py` builds exactly this composite key with the hash fallback; `process_records` keys its output dict by external ID, guaranteeing at most one row per conflict key before `upsert_permits` runs. Loaded 10,364 study-area permits with a unique `(source, external_id)` on every row, 0 rejected.
+
 ### R2 — Missing BBLs on ~0.6% of permits *(confirmed, medium)*
 320 of 54,346 Manhattan DOB NOW records have a null BBL. The FK to `parcels` will reject them, and they are exactly the records most likely to be interesting (new construction on irregular lots).
 
 *Mitigation:* address-based fallback resolution against PLUTO (`house_no` + `street_name`), only when BBL is genuinely absent (PRD §9). Record the resolution method. Anything unresolved goes to `rejected_records` and is reported in the run summary — never dropped.
+
+*Superseded by D7(b) (M4).* Address-string matching was not built. Every null-BBL Manhattan sample checked during M4 either had lat/long (and so is already covered by D7(b)'s point-in-polygon spatial match, which is strictly more general than an address match) or had neither BBL nor coordinates at all (in which case no address-matching scheme would have anything to resolve against either). A record with a null BBL and no coordinates is excluded from the study area, same as an out-of-area PLUTO row — not sent to `rejected_records`, since "not in the study area" is a filter outcome, not a data error. `permit_status`/`work_type` on this residual class have not been audited for whether any fall inside the study area by address alone; if a future pass finds that gap is non-empty, address matching is the fallback to build then, not speculatively now.
 
 ### R3 — BBL format divergence across sources *(confirmed, medium)*
 PLUTO returns `"1002000001.00000000"`; DOB NOW returns a JSON *number*; legacy returns zero-padded block/lot with a borough *name*; ACRIS returns a borough digit with unpadded block/lot. A naive join across these produces zero matches, and — worse — a partially correct one produces a *plausible but wrong* match rate that is easy to miss.
@@ -468,7 +479,7 @@ Verified clean in the same audit: **zero** reverse-gap (no allowlisted BBL falls
 *Mitigation (decisions D6(b) and D7(b), §6).* Both causes are addressed, and both are stated on `/methodology`, since together they define what "in the study area" means for every number the thesis reports.
 
 - **D6(b), implemented.** `resolve.py` admits centroid-less lots by unambiguous block membership. All 10 study-area lots were admitted with zero ambiguous blocks, taking the allowlist from 1,944 to **1,954** BBLs; the Essex Crossing parcels and the Two Bridges condo lot now carry `parcels` rows. Re-measured, this alone closes 21 of the 272 dropped permits (272 → 251).
-- **D7(b), schema landed, adapter pending in M4.** `permits.study_area_match` and `permits.neighborhood` (migration `0012`) let M4 keep the remaining 251 in-polygon permits — the null-BBL, condo-lot, and merged-lot cases that no BBL allowlist can reach. Precedence for M4 to implement: try the BBL allowlist first (`study_area_match = 'bbl'`); otherwise, if the permit's own point falls inside a study-area polygon, keep it with `study_area_match = 'spatial'`, a null `bbl` (its BBL has no `parcels` row, so the FK cannot hold it), and the neighborhood taken from the containing polygon.
+- **D7(b), implemented (M4).** `pipeline/sources/dob_now.py` fetches by BBL-allowlist chunks unioned with the study-area bounding box, then resolves membership with exactly this precedence: BBL allowlist first (`study_area_match = 'bbl'`, keeps the bbl), else point-in-polygon against `study_areas.geom` via `ST_Contains` (`study_area_match = 'spatial'`, bbl forced null since the FK can't hold it), else excluded. Loaded **279 spatial-match permits** — more than the pre-M4 estimate (251), because the real adapter's bounding-box fetch selects for spatially-matchable permits directly rather than the audit's narrower in-polygon sample.
 
 A residual limitation stands and belongs on `/methodology`: a spatially-matched permit appears in the feed and on the map but cannot appear on any parcel page, because there is no parcel to attach it to.
 
@@ -505,6 +516,7 @@ Checked live against `data.cityofnewyork.us` on 2026-08-31. All seven dataset ID
 | Dataset | ID | Verified name |
 |---|---|---|
 | DOB NOW: Build – Approved Permits | `rbx6-tga4` | DOB NOW: Build – Approved Permits |
+| DOB NOW: Build – Job Application Filings | `w9ak-ipjd` | DOB NOW: Build – Job Application Filings |
 | DOB Permit Issuance (legacy) | `ipu4-2q9a` | DOB Permit Issuance |
 | PLUTO | `64uk-42ks` | Primary Land Use Tax Lot Output (PLUTO) |
 | ACRIS Real Property Master | `bnx9-e6tj` | ACRIS - Real Property Master |
@@ -524,8 +536,9 @@ Checked live against `data.cityofnewyork.us` on 2026-08-31. All seven dataset ID
 
 **Field-level findings**
 
-- DOB NOW `approved_date` / `issued_date` / `expired_date` are proper `calendar_date` types — usable as server-side incremental cursors. Manhattan nulls: `approved_date` 1, `issued_date` 9. `approved_date` is the better watermark.
+- DOB NOW `approved_date` / `issued_date` / `expired_date` are proper `calendar_date` types — usable as server-side incremental cursors. Manhattan nulls: `approved_date` 1, `issued_date` 9. `approved_date` is the better watermark. (M4 ended up not using a cursor at all — see M4.)
 - DOB NOW `estimated_job_costs` is `text`; `bbl` and `census_tract` are `number`.
+- `rbx6-tga4`'s `work_type` (21 distinct values: General Construction, Plumbing, Sidewalk Shed, Full Demolition, ...) is a construction discipline, not a new-building/alteration/demolition classification — confirmed by `$select=work_type,count(*)` `$group=work_type` against the live dataset. That classification is `job_type` on the companion job-filings dataset `w9ak-ipjd` (6 distinct values: New Building, Alteration, Alteration CO, ALT-CO - New Building with Existing Elements to Remain, No Work, Full Demolition), joined by `job_filing_number`. Found during M4; see that section and §3's `category` design note.
 - DOB legacy exposes only `dobrundate` as a `calendar_date`; `filing_date`, `issuance_date`, `expiration_date`, `job_start_date` are all `text` in `MM/DD/YYYY`.
 - PLUTO `bbl` serializes as `"1002000001.00000000"`. Census tract field is `bct2020`.
 - ACRIS master carries `modified_date` (usable cursor) but no BBL; legals carries borough/block/lot but no dates or amounts. The two must be joined on `document_id`.

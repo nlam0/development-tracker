@@ -2,14 +2,15 @@
 
 Usage:
     python -m pipeline.run --source pluto
+    python -m pipeline.run --source dob_now
 """
 
 import argparse
 import sys
 
-from pipeline.sources import pluto
+from pipeline.sources import dob_now, pluto
 
-ADAPTERS = {"pluto": pluto.main}
+ADAPTERS = {"pluto": pluto.main, "dob_now": dob_now.main}
 
 
 def main() -> int:
