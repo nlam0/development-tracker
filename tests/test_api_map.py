@@ -44,3 +44,31 @@ def test_map_matches_activity_for_the_same_filters(api_client):
 def test_map_rejects_unknown_category(api_client):
     r = api_client.get("/api/map?category=bogus")
     assert r.status_code == 422
+
+
+def test_activity_block_filter_matches_only_that_block(api_client):
+    """substring(bbl from 2 for 5) is the block portion (Risk-adjacent
+    addition -- see api/filters.py); every returned permit's bbl must carry
+    exactly the requested block."""
+    r = api_client.get("/api/activity?block=00277&limit=50")
+    items = r.json()["items"]
+    assert items
+    assert all(item["bbl"][1:6] == "00277" for item in items)
+
+
+def test_activity_rejects_malformed_block(api_client):
+    r = api_client.get("/api/activity?block=abc")
+    assert r.status_code == 422
+
+
+def test_study_areas_returns_the_three_named_areas(api_client):
+    r = api_client.get("/api/study-areas")
+    assert r.status_code == 200
+    body = r.json()
+    names = {f["properties"]["name"] for f in body["features"]}
+    assert names == {"Chinatown", "Two Bridges", "Lower East Side"}
+
+
+def test_study_areas_geometry_is_a_multipolygon(api_client):
+    body = api_client.get("/api/study-areas").json()
+    assert all(f["geometry"]["type"] == "MultiPolygon" for f in body["features"])

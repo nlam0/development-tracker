@@ -36,6 +36,7 @@ class ActivityFilters:
     neighborhood: list[str] | None = None
     category: list[str] | None = None
     source: list[str] | None = None
+    block: str | None = None
     date_from: date | None = None
     date_to: date | None = None
     cost_min: float | None = None
@@ -58,6 +59,9 @@ class ActivityFilters:
         if self.source:
             clauses.append("source = ANY(%s)")
             params.append(self.source)
+        if self.block:
+            clauses.append("substring(bbl from 2 for 5) = %s")
+            params.append(self.block)
         if self.date_from:
             clauses.append("event_date >= %s")
             params.append(self.date_from)
@@ -81,15 +85,21 @@ def get_activity_filters(
         None, description="comma-separated: new_building,alteration,demolition,other"
     ),
     source: str | None = Query(None, description="comma-separated: dob_now,dob_legacy"),
+    block: str | None = Query(
+        None, description="5-digit BBL block (chars 2-6), e.g. from a watchlist entry"
+    ),
     date_from: date | None = Query(None, description="event_date >= this (inclusive)"),
     date_to: date | None = Query(None, description="event_date <= this (inclusive)"),
     cost_min: float | None = Query(None, ge=0),
     cost_max: float | None = Query(None, ge=0),
 ) -> ActivityFilters:
+    if block is not None and (len(block) != 5 or not block.isdigit()):
+        raise HTTPException(422, f"block must be a 5-digit string, got {block!r}")
     return ActivityFilters(
         neighborhood=_parse_csv_enum(neighborhood, VALID_NEIGHBORHOODS, "neighborhood"),
         category=_parse_csv_enum(category, VALID_CATEGORIES, "category"),
         source=_parse_csv_enum(source, VALID_SOURCES, "source"),
+        block=block,
         date_from=date_from,
         date_to=date_to,
         cost_min=cost_min,

@@ -8,6 +8,15 @@ FeatureCollection -- so this returns every matching point up to a hard cap,
 not a paginated slice of one: a client-side clusterer needs the whole
 matching set to cluster correctly, and the feed's cursor pagination model
 doesn't apply to "show me the markers."
+
+GET /api/study-areas is a small addition beyond PRD §11's literal six --
+found missing while building M6's map view. PRD §7B requires the
+study-area boundary to be visible on the map, and CLAUDE.md is explicit
+that boundaries "must be stored explicitly in the application (not
+hardcoded per-query)" -- so the frontend needs a real source for that
+geometry rather than a copy-pasted polygon baked into web/. This is a
+read-only view over study_areas.geom, the same table M1 already treats as
+the single source of truth for the boundary everywhere else.
 """
 
 from fastapi import APIRouter, Depends, Query
@@ -15,7 +24,14 @@ from psycopg import Connection
 
 from api.db import get_conn
 from api.filters import ActivityFilters, get_activity_filters
-from api.models import MapFeature, MapFeatureCollection, MapFeatureProperties
+from api.models import (
+    MapFeature,
+    MapFeatureCollection,
+    MapFeatureProperties,
+    StudyAreaFeature,
+    StudyAreaFeatureCollection,
+    StudyAreaProperties,
+)
 
 router = APIRouter()
 
@@ -49,3 +65,20 @@ def get_map(
         for r in rows
     ]
     return MapFeatureCollection(features=features)
+
+
+@router.get("/api/study-areas", response_model=StudyAreaFeatureCollection)
+def get_study_areas(conn: Connection = Depends(get_conn)) -> StudyAreaFeatureCollection:
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT name, definition_note, ST_AsGeoJSON(geom)::json AS geometry FROM study_areas;"
+        )
+        rows = cur.fetchall()
+    features = [
+        StudyAreaFeature(
+            geometry=r["geometry"],
+            properties=StudyAreaProperties(name=r["name"], definition_note=r["definition_note"]),
+        )
+        for r in rows
+    ]
+    return StudyAreaFeatureCollection(features=features)

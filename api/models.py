@@ -116,6 +116,22 @@ class MapFeatureCollection(BaseModel):
     features: list[MapFeature]
 
 
+class StudyAreaProperties(BaseModel):
+    name: str
+    definition_note: str
+
+
+class StudyAreaFeature(BaseModel):
+    type: Literal["Feature"] = "Feature"
+    geometry: dict
+    properties: StudyAreaProperties
+
+
+class StudyAreaFeatureCollection(BaseModel):
+    type: Literal["FeatureCollection"] = "FeatureCollection"
+    features: list[StudyAreaFeature]
+
+
 class TopProject(BaseModel):
     id: int
     bbl: str | None

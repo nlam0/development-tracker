@@ -2,7 +2,7 @@
 
 Lower Manhattan Development Tracker began as a research tool for studying neighborhood change in Chinatown and Two Bridges. NYC development information is spread across several independently structured public datasets, making repeated parcel-level research cumbersome. The project combines permitting, land-use, property, and demographic records into a single research interface and automatically monitors new development activity.
 
-**Status:** M0 (foundation), M1 (study-area definition), M2 (schema and migrations), M3 (PLUTO ingestion), M4 (DOB NOW ingestion), and M5 (read API) complete, plus a post-M3 data-integrity audit. The study area resolves to 1,954 parcels across the three neighborhoods, carrying 10,364 DOB NOW permits, all served through a FastAPI read layer (`api/`). See `IMPLEMENTATION_PLAN.md` for the full build plan and milestone sequence.
+**Status:** M0 (foundation), M1 (study-area definition), M2 (schema and migrations), M3 (PLUTO ingestion), M4 (DOB NOW ingestion), M5 (read API), and M6 (frontend) complete, plus a post-M3 data-integrity audit. The study area resolves to 1,954 parcels across the three neighborhoods, carrying 10,364 DOB NOW permits, served through a FastAPI read layer (`api/`) and a Next.js frontend (`web/`) -- feed, map, parcel pages, watchlist, and methodology. See `IMPLEMENTATION_PLAN.md` for the full build plan and milestone sequence.
 
 ## Documents
 
@@ -63,11 +63,12 @@ ruff check .                 # lint
 ```bash
 cd web
 npm install
-npm run dev     # http://localhost:3000
+cp .env.example .env.local   # NEXT_PUBLIC_API_URL, defaults to http://localhost:8000
+npm run dev     # http://localhost:3000 -- run `uvicorn api.main:app --reload` alongside it
 npm run build   # production build
 npm run lint
 ```
 
 ## Limitations
 
-Study-area boundaries (Chinatown, Two Bridges, adjacent Lower East Side) are researcher-defined, not official administrative geography — see `/methodology` (once built) and `IMPLEMENTATION_PLAN.md` §6 (decision D1) for how they were drawn. Which parcels fall inside those boundaries is also a judgment: most are resolved by point-in-polygon against parcel centroids, while lots PLUTO gives no centroid for are admitted by block membership, a weaker claim recorded per row (decision D6). The same is true of permits: most are matched to the study area by their parcel's BBL, but 279 of 10,364 have no BBL the allowlist can reach (a null BBL, a condo unit lot, or a merged/demapped lot) and are matched instead by their own point falling inside a study-area polygon (decision D7) — such a permit carries a null `bbl` and appears in the feed and on the map, but not on any parcel page or `/api/parcels/{bbl}/permits` response, since there is no parcel for it to be a sub-resource of. `GET /api/parcels/{bbl}/records` and `/api/stats`'s digest windows are scoped to `permits` only and will return no ACRIS activity until M8 loads `property_records`. Other known data-quality caveats (BBL format divergence, ACRIS condo-lot matching, census tract vintage discontinuities) are documented in `IMPLEMENTATION_PLAN.md` §5.
+Study-area boundaries (Chinatown, Two Bridges, adjacent Lower East Side) are researcher-defined, not official administrative geography — see `/methodology` and `IMPLEMENTATION_PLAN.md` §6 (decision D1) for how they were drawn. Which parcels fall inside those boundaries is also a judgment: most are resolved by point-in-polygon against parcel centroids, while lots PLUTO gives no centroid for are admitted by block membership, a weaker claim recorded per row (decision D6). The same is true of permits: most are matched to the study area by their parcel's BBL, but 279 of 10,364 have no BBL the allowlist can reach (a null BBL, a condo unit lot, or a merged/demapped lot) and are matched instead by their own point falling inside a study-area polygon (decision D7) — such a permit carries a null `bbl` and appears in the feed and on the map, but not on any parcel page or `/api/parcels/{bbl}/permits` response, since there is no parcel for it to be a sub-resource of. `GET /api/parcels/{bbl}/records` and `/api/stats`'s digest windows are scoped to `permits` only and will return no ACRIS activity until M8 loads `property_records`. The watchlist can bookmark a parcel or a block with a real activity feed behind each, but a free-text address bookmark is a note only — there's no address-to-BBL matching (a deliberate scope decision, not an oversight; see R2 and the M6 section). The map's basemap is MapLibre's public demo style, a placeholder pending a real basemap/tile-provider decision. Other known data-quality caveats (BBL format divergence, ACRIS condo-lot matching, census tract vintage discontinuities) are documented in `IMPLEMENTATION_PLAN.md` §5.
