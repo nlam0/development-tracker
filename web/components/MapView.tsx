@@ -6,11 +6,16 @@
  * why that endpoint exists) and permits matching the current filters as a
  * clustered GeoJSON source, colored by category.
  *
- * Basemap: MapLibre's own public demo style (demotiles.maplibre.org), a
- * bare OSM-derived vector style with no API key. CLAUDE.md's confirmed
- * infrastructure names MapLibre GL JS but not a specific tile provider, so
- * this is a placeholder pending a real basemap/key decision -- swapping
- * `MAP_STYLE_URL` is the only change needed once one is chosen.
+ * Basemap: OpenFreeMap's "Positron" style (tiles.openfreemap.org), a free,
+ * no-signup, no-API-key OSM-based vector style -- a light, muted basemap
+ * that fits PRD §12's restrained visual direction. (MapLibre's own public
+ * demo style at demotiles.maplibre.org was tried first, but it's a
+ * world-map demo of country outlines with no tile data below country
+ * zoom -- at this view's city-block zoom it rendered as nothing but its
+ * flat background-color layer, a blank blue screen.) CLAUDE.md's
+ * confirmed infrastructure names MapLibre GL JS but not a specific tile
+ * provider, so this is still a default pending a deliberate choice --
+ * swapping `MAP_STYLE_URL` is the only change needed if one is made.
  */
 
 import { useCallback, useEffect, useRef } from "react";
@@ -23,7 +28,7 @@ import { CATEGORY_COLORS } from "@/lib/filters";
 import { filtersFromSearchParams } from "@/lib/filters";
 import { formatCurrency, formatDate } from "@/lib/format";
 
-const MAP_STYLE_URL = "https://demotiles.maplibre.org/style.json";
+const MAP_STYLE_URL = "https://tiles.openfreemap.org/styles/positron";
 // Center of the three study areas' combined bounding box (see
 // pipeline/study_area/resolve.py's BBOX).
 const STUDY_AREA_CENTER: [number, number] = [-73.987, 40.715];
