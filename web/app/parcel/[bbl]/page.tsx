@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { ApiError, getParcel, getParcelPermits, getParcelRecords } from "@/lib/api";
-import { blockFromBbl, formatCurrency, formatDate } from "@/lib/format";
+import { blockFromBbl, formatCensusTract2020, formatCurrency, formatDate } from "@/lib/format";
 import CategoryTag from "@/components/CategoryTag";
 import WatchlistButton from "@/components/WatchlistButton";
 
@@ -126,7 +126,7 @@ export default async function ParcelPage(props: PageProps<"/parcel/[bbl]">) {
         <h2 className="mb-2 text-sm font-semibold uppercase tracking-wide text-muted">Context</h2>
         <dl className="grid grid-cols-2 gap-x-6 gap-y-1 border border-border bg-surface p-3 text-sm sm:grid-cols-3">
           <Field label="Neighborhood" value={parcel.neighborhood} />
-          <Field label="Census tract (2020)" value={parcel.census_tract_2020} />
+          <Field label="Census tract (2020)" value={formatCensusTract2020(parcel.census_tract_2020)} />
           <Field label="Census tract (2010)" value={parcel.census_tract_2010} />
         </dl>
       </section>
