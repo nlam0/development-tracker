@@ -99,3 +99,27 @@ def test_migrations_are_idempotent(db_conn):
         applied = {row[0] for row in cur.fetchall()}
 
     assert applied == expected
+
+
+def test_permits_carry_study_area_match_and_neighborhood(db_conn):
+    """Decision D7(b): a spatially-matched permit has no parcels row to join
+    through, so permits must carry their own neighborhood and record how they
+    entered the study area."""
+    with db_conn.cursor() as cur:
+        cur.execute("""
+            SELECT column_name, is_nullable FROM information_schema.columns
+            WHERE table_schema = 'public' AND table_name = 'permits'
+              AND column_name IN ('neighborhood', 'study_area_match');
+        """)
+        cols = dict(cur.fetchall())
+    assert cols.get("study_area_match") == "NO", "study_area_match must be NOT NULL"
+    assert "neighborhood" in cols
+
+
+def test_study_area_bbls_records_resolution_method(db_conn):
+    """Decision D6(b): how a BBL entered the study area is research metadata."""
+    with db_conn.cursor() as cur:
+        cur.execute("SELECT DISTINCT resolution_method FROM study_area_bbls;")
+        methods = {row[0] for row in cur.fetchall()}
+    assert methods <= {"centroid", "block_membership"}
+    assert "centroid" in methods

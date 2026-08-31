@@ -58,6 +58,28 @@ def fetch_pluto_centroids(app_token: str | None) -> list[tuple[str, float, float
     return out
 
 
+def fetch_pluto_bbls_without_centroids(app_token: str | None) -> list[str]:
+    """Fetch every Manhattan PLUTO lot that has no centroid at all.
+
+    These cannot be bounding-box filtered -- having no coordinates is exactly
+    what makes them invisible to a spatial query -- so the whole borough's set
+    is pulled and narrowed by block membership in SQL (decision D6(b)). It is
+    a small set: 398 lots borough-wide, skewed toward air-rights (9xxx) and
+    condo lots.
+    """
+    return [
+        normalize_bbl_pluto(row["bbl"])
+        for row in fetch_all(
+            PLUTO_DATASET,
+            select="bbl",
+            where="borocode='1' AND latitude IS NULL",
+            order="bbl",
+            app_token=app_token,
+        )
+        if row.get("bbl")
+    ]
+
+
 def main() -> int:
     load_dotenv()
     db_url = os.environ.get("SUPABASE_DB_URL_DIRECT")
@@ -69,6 +91,10 @@ def main() -> int:
     print("Fetching PLUTO centroids in study-area bounding box...")
     centroids = fetch_pluto_centroids(app_token)
     print(f"  received {len(centroids)} candidate parcels")
+
+    print("Fetching Manhattan PLUTO lots with no centroid (D6(b) fallback)...")
+    no_centroid = fetch_pluto_bbls_without_centroids(app_token)
+    print(f"  received {len(no_centroid)} lots with no coordinates")
 
     with psycopg.connect(db_url, connect_timeout=10) as conn:
         with conn.cursor() as cur:
@@ -85,23 +111,74 @@ def main() -> int:
                 for bbl, lat, lon in centroids:
                     copy.write_row((bbl, lat, lon))
 
+            cur.execute("""
+                CREATE TEMP TABLE _pluto_no_centroid_staging (
+                    bbl CHAR(10) PRIMARY KEY
+                ) ON COMMIT DROP;
+            """)
+            with cur.copy("COPY _pluto_no_centroid_staging (bbl) FROM STDIN") as copy:
+                for bbl in no_centroid:
+                    copy.write_row((bbl,))
+
             cur.execute("DELETE FROM study_area_bbls;")
             cur.execute("""
-                INSERT INTO study_area_bbls (bbl, study_area_id)
-                SELECT s.bbl, sa.id
+                INSERT INTO study_area_bbls (bbl, study_area_id, resolution_method)
+                SELECT s.bbl, sa.id, 'centroid'
                 FROM _pluto_centroid_staging s
                 JOIN study_areas sa
                     ON ST_Contains(sa.geom, ST_SetSRID(ST_MakePoint(s.lon, s.lat), 4326));
             """)
+
+            # D6(b): a centroid-less lot joins the study area when its block
+            # unambiguously belongs to one. A block straddling two study areas
+            # (the Division St split) is left unresolved rather than assigned
+            # by majority vote -- that would be a silent research judgment.
             cur.execute("""
-                SELECT sa.name, count(*)
+                WITH block_area AS (
+                    SELECT substring(bbl, 1, 6) AS blk,
+                           min(study_area_id)   AS study_area_id,
+                           count(DISTINCT study_area_id) AS n_areas
+                    FROM study_area_bbls
+                    WHERE resolution_method = 'centroid'
+                    GROUP BY 1
+                )
+                INSERT INTO study_area_bbls (bbl, study_area_id, resolution_method)
+                SELECT n.bbl, ba.study_area_id, 'block_membership'
+                FROM _pluto_no_centroid_staging n
+                JOIN block_area ba ON ba.blk = substring(n.bbl, 1, 6)
+                WHERE ba.n_areas = 1
+                  AND NOT EXISTS (SELECT 1 FROM study_area_bbls x WHERE x.bbl = n.bbl);
+            """)
+            print(f"  admitted {cur.rowcount} lots by block membership")
+
+            cur.execute("""
+                WITH block_area AS (
+                    SELECT substring(bbl, 1, 6) AS blk,
+                           count(DISTINCT study_area_id) AS n_areas
+                    FROM study_area_bbls
+                    WHERE resolution_method = 'centroid'
+                    GROUP BY 1
+                )
+                SELECT n.bbl FROM _pluto_no_centroid_staging n
+                JOIN block_area ba ON ba.blk = substring(n.bbl, 1, 6)
+                WHERE ba.n_areas > 1;
+            """)
+            ambiguous = [r[0] for r in cur.fetchall()]
+            if ambiguous:
+                print(
+                    f"  {len(ambiguous)} centroid-less lots left unresolved "
+                    f"(block spans >1 study area): {', '.join(ambiguous)}"
+                )
+
+            cur.execute("""
+                SELECT sa.name, b.resolution_method, count(*)
                 FROM study_area_bbls b
                 JOIN study_areas sa ON sa.id = b.study_area_id
-                GROUP BY sa.name
-                ORDER BY sa.name;
+                GROUP BY sa.name, b.resolution_method
+                ORDER BY sa.name, b.resolution_method;
             """)
-            for name, count in cur.fetchall():
-                print(f"  {name}: {count} parcels")
+            for name, method, count in cur.fetchall():
+                print(f"  {name} [{method}]: {count} parcels")
         conn.commit()
 
     return 0

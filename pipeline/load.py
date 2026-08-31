@@ -187,12 +187,18 @@ def upsert_parcels(conn, rows: Iterable[dict]) -> tuple[int, int]:
     placeholders = ", ".join(f"%({c})s" for c in cols)
     update_cols = [c for c in cols if c != "bbl"]
     set_clause = ", ".join(f"{c} = EXCLUDED.{c}" for c in update_cols)
+    # ST_MakePoint and ST_SetSRID are both STRICT, so a null coordinate yields
+    # a null geom without a CASE guard. The casts are required, not cosmetic:
+    # under executemany the statement is prepared once, and a null parameter
+    # carries no type, so an uncast placeholder fails type inference
+    # ("could not determine data type of parameter"). Study-area lots admitted
+    # by block membership (decision D6(b)) have no PLUTO centroid, so null
+    # coordinates are a normal case here, not an edge one.
     sql = f"""
         INSERT INTO parcels ({", ".join(cols)}, geom, retrieved_at)
         VALUES ({placeholders},
-                CASE WHEN %(longitude)s IS NOT NULL AND %(latitude)s IS NOT NULL
-                     THEN ST_SetSRID(ST_MakePoint(%(longitude)s, %(latitude)s), 4326)
-                     ELSE NULL END,
+                ST_SetSRID(
+                    ST_MakePoint(%(longitude)s::float8, %(latitude)s::float8), 4326),
                 now())
         ON CONFLICT (bbl) DO UPDATE SET {set_clause}, geom = EXCLUDED.geom, retrieved_at = now()
         RETURNING (xmax = 0) AS inserted;

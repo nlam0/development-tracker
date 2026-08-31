@@ -2,7 +2,7 @@
 
 Companion to `PRD.md`. The PRD defines *what* and *why*; this document defines *how*, in what order, and what is likely to go wrong. Section references like (PRD §8) point back to the spec.
 
-**Status:** M0-M3 complete, plus a post-M3 data-integrity audit (findings folded into R1, R12, and open decisions D6/D7 below). M0 scaffolding and M1's study areas are committed and pushed (`origin/main`); M1's resolved BBL set is 1,944 parcels (Chinatown 501, Two Bridges 522, Lower East Side 921). M2 has applied the full §3 schema to Supabase -- 9 application tables with all constraints and indexes verified. M3 has loaded all 1,944 study-area parcels from PLUTO into `parcels`, verified idempotent. See each milestone section below for details.
+**Status:** M0-M3 complete, plus a post-M3 data-integrity audit (findings folded into R1 and R12; decisions D6 and D7 resolved and implemented). The study area resolves to **1,954 parcels** (Chinatown 501, Two Bridges 523, Lower East Side 930), all loaded into `parcels`. M0 scaffolding and M1's study areas are committed and pushed (`origin/main`); M1's resolved BBL set is 1,944 parcels (Chinatown 501, Two Bridges 522, Lower East Side 921). M2 has applied the full §3 schema to Supabase -- 9 application tables with all constraints and indexes verified. M3 has loaded all 1,944 study-area parcels from PLUTO into `parcels`, verified idempotent. See each milestone section below for details.
 
 All dataset IDs, field names, and data-quality findings below were verified against the live NYC Open Data API on 2026-08-31. See [Appendix A](#appendix-a--verified-source-reconnaissance) for the raw findings.
 
@@ -125,7 +125,7 @@ Apply §3's DDL as numbered migrations. Includes constraints and indexes, not ju
 ### M3 — PLUTO ingestion → `parcels`
 PLUTO is the parcel backbone every other source joins against, so it lands before any permit data. Build `pipeline/socrata.py` (token auth, `$limit`/`$offset` paging, retry with backoff) and `transforms/bbl.py` here — both are used by every later adapter. Filter to the M1 BBL set.
 
-**Exit:** ~1,900–2,000 study-area parcels loaded with zoning, land use, lot/building area, year built, units, lat/long (M1's resolved `study_area_bbls` count, not the earlier loose block-range estimate — see M1); re-running changes `records_updated` but not row count.
+**Exit:** ~1,900–2,000 study-area parcels loaded with zoning, land use, lot/building area, year built, units, lat/long (M1's resolved `study_area_bbls` count, not the earlier loose block-range estimate — see M1); re-running changes `records_updated` but not row count. *Final count after decision D6(b): 1,954.*
 
 **Done.** `pipeline/socrata.py` (token auth, deterministic `$order`-based paging, retry with exponential backoff on 429/5xx — Risk R9) and `pipeline/transforms/bbl.py` (canonical-BBL normalization for all four source shapes, plus `parse_bbl()` to derive `borough`/`block`/`lot` back out of the same string stored as the primary key, so those columns can never diverge from `bbl` — Risk R3) are both built here as shared modules, per the milestone's own instruction that every later adapter reuses them. `pipeline/study_area/resolve.py`'s inline BBL normalization (flagged in M1 as a stopgap) was switched over to `normalize_bbl_pluto()` instead of carrying two copies of the same logic forward.
 
@@ -141,7 +141,9 @@ Verified behavior-preserving: the paged resolve returns the identical 4,246 cand
 
 Blocking M4: the natural key in §4/R1 was measurably wrong — see R1 for the numbers. Not fixed in code, because M4's loader doesn't exist yet; the corrected key is now recorded in both places.
 
-Still open: D6 and D7 in §6 (what counts as "in the study area"), which are research judgments, not implementation choices.
+Resolved since: D6(b) and D7(b) in §6. D6(b) is implemented — `resolve.py` admits centroid-less lots by unambiguous block membership, recorded in a new `study_area_bbls.resolution_method` column (migration `0011`); all 10 study-area lots were admitted with zero ambiguous blocks, and the allowlist moved from 1,944 to 1,954. D7(b)'s schema landed (`permits.study_area_match` + `permits.neighborhood`, migration `0012`); its adapter logic belongs to M4.
+
+Admitting the D6(b) lots immediately surfaced a latent bug in the new batched upsert: those lots have no coordinates, and under `executemany` the statement is prepared once, so an uncast null placeholder fails Postgres type inference ("could not determine data type of parameter"). The `CASE` guard around the geometry was dropped in favour of casts on strict PostGIS constructors, and `tests/test_pluto_ingestion.py` now covers the null-coordinate path directly.
 
 ### M4 — DOB NOW ingestion → `permits`
 The primary source (PRD §6). Incremental sync on `approved_date`. Handle the sentinel-value and null-BBL cases from Risk R1/R2. Write `ingestion_runs` rows on every execution including failures.
@@ -192,6 +194,8 @@ CREATE INDEX study_areas_geom_idx ON study_areas USING GIST (geom);
 CREATE TABLE study_area_bbls (
   bbl           CHAR(10) PRIMARY KEY,
   study_area_id INTEGER NOT NULL REFERENCES study_areas(id),
+  resolution_method TEXT NOT NULL              -- 'centroid' | 'block_membership' (D6)
+    CHECK (resolution_method IN ('centroid', 'block_membership')),
   resolved_at   TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX study_area_bbls_study_area_id_idx ON study_area_bbls (study_area_id);
@@ -233,7 +237,10 @@ CREATE TABLE permits (
   id              BIGSERIAL PRIMARY KEY,
   source          TEXT NOT NULL,          -- 'dob_now' | 'dob_legacy'
   external_id     TEXT NOT NULL,          -- see §4 for per-source derivation
-  bbl             CHAR(10) REFERENCES parcels(bbl),
+  bbl             CHAR(10) REFERENCES parcels(bbl),   -- NULL when study_area_match='spatial'
+  neighborhood    TEXT REFERENCES study_areas(name) ON UPDATE CASCADE,
+  study_area_match TEXT NOT NULL                       -- 'bbl' | 'spatial' (D7)
+    CHECK (study_area_match IN ('bbl', 'spatial')),
   bin             TEXT,
   address         TEXT,
   filing_number   TEXT,
@@ -257,6 +264,7 @@ CREATE TABLE permits (
   CONSTRAINT permits_natural_key UNIQUE (source, external_id)
 );
 CREATE INDEX permits_bbl_idx        ON permits (bbl);
+CREATE INDEX permits_neighborhood_idx ON permits (neighborhood);
 CREATE INDEX permits_event_date_idx ON permits (event_date DESC);
 CREATE INDEX permits_category_idx   ON permits (category);
 CREATE INDEX permits_geom_idx       ON permits USING GIST (geom);
@@ -337,7 +345,7 @@ CREATE TABLE rejected_records (
 
 ### Additions beyond PRD §10
 
-The PRD's suggested schema is a starting point; six deliberate additions: `raw` (reprocessing without refetch), `category` (the map needs one canonical classification), `event_date` (cross-source chronological sort), `bbl_confidence` (honest condo joins), `rejected_records` + cursor columns on `ingestion_runs` (PRD §14's "log malformed records" and incremental resume both need somewhere to live), and `study_area_bbls` (the materialized point-in-polygon result every adapter's study-area filter reads from, added in M1).
+The PRD's suggested schema is a starting point; six deliberate additions: `raw` (reprocessing without refetch), `category` (the map needs one canonical classification), `event_date` (cross-source chronological sort), `bbl_confidence` (honest condo joins), `rejected_records` + cursor columns on `ingestion_runs` (PRD §14's "log malformed records" and incremental resume both need somewhere to live), `study_area_bbls` (the materialized point-in-polygon result every adapter's study-area filter reads from, added in M1), and — from the post-M3 audit — `study_area_bbls.resolution_method` plus `permits.study_area_match`/`permits.neighborhood`, which make decisions D6 and D7 legible in the data rather than implicit in the loader.
 
 ---
 
@@ -457,7 +465,12 @@ Measured (audit, post-M3): of the 8,721 DOB NOW permits falling spatially inside
 
 Verified clean in the same audit: **zero** reverse-gap (no allowlisted BBL falls outside the polygons), **zero** FK violations against the current `parcels`, and **zero** unparseable BBLs across all 22,960 records.
 
-*Mitigation:* pending — see the two open decisions in §6. Whatever is chosen must be stated on `/methodology`, since it defines what "in the study area" means for every number the thesis reports.
+*Mitigation (decisions D6(b) and D7(b), §6).* Both causes are addressed, and both are stated on `/methodology`, since together they define what "in the study area" means for every number the thesis reports.
+
+- **D6(b), implemented.** `resolve.py` admits centroid-less lots by unambiguous block membership. All 10 study-area lots were admitted with zero ambiguous blocks, taking the allowlist from 1,944 to **1,954** BBLs; the Essex Crossing parcels and the Two Bridges condo lot now carry `parcels` rows. Re-measured, this alone closes 21 of the 272 dropped permits (272 → 251).
+- **D7(b), schema landed, adapter pending in M4.** `permits.study_area_match` and `permits.neighborhood` (migration `0012`) let M4 keep the remaining 251 in-polygon permits — the null-BBL, condo-lot, and merged-lot cases that no BBL allowlist can reach. Precedence for M4 to implement: try the BBL allowlist first (`study_area_match = 'bbl'`); otherwise, if the permit's own point falls inside a study-area polygon, keep it with `study_area_match = 'spatial'`, a null `bbl` (its BBL has no `parcels` row, so the FK cannot hold it), and the neighborhood taken from the containing polygon.
+
+A residual limitation stands and belongs on `/methodology`: a spatially-matched permit appears in the feed and on the map but cannot appear on any parcel page, because there is no parcel to attach it to.
 
 ---
 
@@ -472,15 +485,8 @@ Resolved 2026-08-31. Nothing here blocks implementation.
 | D3 | PLUTO version | Pin **`26v2`** (only published version). Version bumps are a deliberate manual step, never automatic. |
 | D4 | ACRIS document types | **`DEED`, `DEEDO`, `CORRD`** (conveyances) + **`MTGE`, `ASST`, `SAT`** (mortgage lifecycle). Leases and RPTT excluded from V1. |
 | D5 | ACS vintages | **ACS5 2014, 2019, 2024** — 5-year spacing, non-overlapping samples. Tract-vintage handling per Risk R11. |
-
-### Open decisions (raised by the post-M3 audit, needed before M4)
-
-Both concern what "in the study area" means, so both are research judgments rather than implementation choices, and both belong on `/methodology` once settled (see Risk R12).
-
-| # | Decision | Options |
-|---|---|---|
-| D6 | **Should the study area include lots PLUTO gives no centroid for?** 10 known study-area lots, incl. the Essex Crossing parcels and a Two Bridges condo lot. | (a) Leave excluded, and state the exclusion on `/methodology`; (b) admit them by block membership — if other lots on the block resolve to a study area, so does this one; (c) admit them via true lot polygons (MapPLUTO shapefile) instead of centroids, which fixes the root cause but adds a non-Socrata data dependency. |
-| D7 | **Should the permit study-area filter be BBL-only, or BBL ∪ point-in-polygon?** BBL-only currently drops 272 in-polygon permits (3.1%). | (a) BBL-only — every permit ties to a known parcel, cleanest joins, but silently omits condo/vanished-lot activity; (b) BBL ∪ spatial — capture any permit whose own lat/long falls inside a study-area polygon, storing it with a null `bbl` and an explicit `bbl_confidence`-style marker, so nothing inside the boundary goes missing at the cost of permits that no parcel page can show. |
+| D6 | Centroid-less study-area lots | **Admit by block membership.** A PLUTO lot with no centroid joins the study area when its block unambiguously belongs to one; a block straddling two areas leaves the lot unresolved rather than assigned by majority. Recorded per row in `study_area_bbls.resolution_method` (`'centroid'` \| `'block_membership'`) and surfaced on `/methodology`, since block membership is a weaker claim than point-in-polygon. |
+| D7 | Permit study-area filter | **BBL ∪ point-in-polygon.** A permit enters the study area either because its BBL is in the allowlist or because its own point falls inside a study-area polygon. `permits.study_area_match` (`'bbl'` \| `'spatial'`) records which, and `permits.neighborhood` is carried on the row because a spatial match has no `parcels` row to join through. |
 
 ### Still to specify (during the milestone that needs it, not before)
 

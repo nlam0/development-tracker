@@ -31,10 +31,40 @@ def test_parcels_neighborhood_counts_match_study_area_bbls(db_conn):
     assert actual == expected
 
 
-def test_parcels_have_no_null_geometry(db_conn):
+def test_null_geometry_occurs_only_on_block_resolved_parcels(db_conn):
+    """Decision D6(b) admits lots PLUTO gives no centroid for, so a null geom
+    is legitimate -- but only for those. Any centroid-resolved parcel missing
+    a geometry means the point-in-polygon load itself dropped coordinates.
+    """
     with db_conn.cursor() as cur:
-        cur.execute("SELECT count(*) FROM parcels WHERE geom IS NULL;")
-        assert cur.fetchone()[0] == 0
+        cur.execute("""
+            SELECT b.resolution_method, count(*)
+            FROM parcels p
+            JOIN study_area_bbls b ON b.bbl = p.bbl
+            WHERE p.geom IS NULL
+            GROUP BY b.resolution_method;
+        """)
+        by_method = dict(cur.fetchall())
+    assert by_method.get("centroid", 0) == 0, (
+        "a centroid-resolved parcel lost its geometry during load"
+    )
+
+
+def test_block_resolved_parcels_are_loaded(db_conn):
+    """The D6(b) lots are the point of the decision -- verify they arrived."""
+    with db_conn.cursor() as cur:
+        cur.execute("""
+            SELECT count(*) FROM parcels p
+            JOIN study_area_bbls b ON b.bbl = p.bbl
+            WHERE b.resolution_method = 'block_membership';
+        """)
+        loaded = cur.fetchone()[0]
+        cur.execute(
+            "SELECT count(*) FROM study_area_bbls WHERE resolution_method = 'block_membership';"
+        )
+        resolved = cur.fetchone()[0]
+    assert loaded == resolved
+    assert loaded > 0, "expected the centroid-less study-area lots to be admitted"
 
 
 def test_parcels_bbl_is_canonical_ten_digit(db_conn):
@@ -61,3 +91,25 @@ def test_most_recent_pluto_ingestion_run_succeeded(db_conn):
     status, records_rejected = row
     assert status == "success"
     assert records_rejected == 0
+
+
+def test_upsert_tolerates_null_coordinates(db_conn):
+    """Regression: under executemany the statement is prepared once, so an
+    uncast null coordinate placeholder fails Postgres type inference. D6(b)
+    lots have no centroid, making this a normal path rather than an edge case.
+    """
+    from pipeline.load import PARCEL_COLUMNS, upsert_parcels
+
+    row = dict.fromkeys(PARCEL_COLUMNS)
+    row.update(
+        bbl="9999999999", borough=9, block=99999, lot=9999,
+        latitude=None, longitude=None, pluto_version="test", neighborhood=None,
+    )
+    try:
+        inserted, _ = upsert_parcels(db_conn, [row])
+        assert inserted == 1
+        with db_conn.cursor() as cur:
+            cur.execute("SELECT geom FROM parcels WHERE bbl = '9999999999';")
+            assert cur.fetchone()[0] is None
+    finally:
+        db_conn.rollback()

@@ -2,7 +2,7 @@
 
 Lower Manhattan Development Tracker began as a research tool for studying neighborhood change in Chinatown and Two Bridges. NYC development information is spread across several independently structured public datasets, making repeated parcel-level research cumbersome. The project combines permitting, land-use, property, and demographic records into a single research interface and automatically monitors new development activity.
 
-**Status:** M0 (foundation), M1 (study-area definition), M2 (schema and migrations), and M3 (PLUTO ingestion) complete. See `IMPLEMENTATION_PLAN.md` for the full build plan and milestone sequence.
+**Status:** M0 (foundation), M1 (study-area definition), M2 (schema and migrations), and M3 (PLUTO ingestion) complete, plus a post-M3 data-integrity audit. The study area resolves to 1,954 parcels across the three neighborhoods. See `IMPLEMENTATION_PLAN.md` for the full build plan and milestone sequence.
 
 ## Documents
 
@@ -67,4 +67,4 @@ npm run lint
 
 ## Limitations
 
-Study-area boundaries (Chinatown, Two Bridges, adjacent Lower East Side) are researcher-defined, not official administrative geography — see `/methodology` (once built) and `IMPLEMENTATION_PLAN.md` §6 (decision D1) for how they were drawn. Other known data-quality caveats (BBL format divergence, ACRIS condo-lot matching, census tract vintage discontinuities) are documented in `IMPLEMENTATION_PLAN.md` §5.
+Study-area boundaries (Chinatown, Two Bridges, adjacent Lower East Side) are researcher-defined, not official administrative geography — see `/methodology` (once built) and `IMPLEMENTATION_PLAN.md` §6 (decision D1) for how they were drawn. Which parcels fall inside those boundaries is also a judgment: most are resolved by point-in-polygon against parcel centroids, while lots PLUTO gives no centroid for are admitted by block membership, a weaker claim recorded per row (decision D6). Other known data-quality caveats (BBL format divergence, ACRIS condo-lot matching, census tract vintage discontinuities) are documented in `IMPLEMENTATION_PLAN.md` §5.
