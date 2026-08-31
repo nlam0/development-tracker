@@ -2,7 +2,7 @@
 
 Companion to `PRD.md`. The PRD defines *what* and *why*; this document defines *how*, in what order, and what is likely to go wrong. Section references like (PRD §8) point back to the spec.
 
-**Status:** M0 and M1 complete. M0 scaffolding is committed and pushed (`origin/main`). M1's study areas are loaded into Supabase with a resolved BBL set of 1,944 parcels (Chinatown 501, Two Bridges 522, Lower East Side 921) -- see the M1 section below for how this compares to the pre-resolution estimate.
+**Status:** M0, M1, and M2 complete. M0 scaffolding and M1's study areas are committed and pushed (`origin/main`); M1's resolved BBL set is 1,944 parcels (Chinatown 501, Two Bridges 522, Lower East Side 921). M2 has applied the full §3 schema to Supabase -- 9 application tables with all constraints and indexes verified. See each milestone section below for details.
 
 All dataset IDs, field names, and data-quality findings below were verified against the live NYC Open Data API on 2026-08-31. See [Appendix A](#appendix-a--verified-source-reconnaissance) for the raw findings.
 
@@ -117,6 +117,10 @@ Verification: geometry validity, the split's area-partition property (no gaps or
 Apply §3's DDL as numbered migrations. Includes constraints and indexes, not just tables — the unique constraints are what make ingestion idempotent (PRD §14), so they ship with the schema rather than being retrofitted.
 
 **Exit:** migrations apply cleanly to a fresh database; a documented reset path exists.
+
+**Done.** `db/migrations/0004`–`0009` add `parcels`, `permits`, `property_records`, `census_context`, `ingestion_runs`, and `rejected_records`, in FK-safe order on top of M1's `study_areas`/`study_area_bbls`. Applied to the live Supabase instance via `scripts/migrate.py`; re-running is confirmed a no-op. Verified by introspecting `information_schema` directly rather than trusting the SQL files matched what actually landed: all 9 tables exist, the idempotency-critical `UNIQUE (source, external_id)` constraints are present on both `permits` and `property_records`, and every FK matches the pipeline's load order (`permits.bbl` → `parcels.bbl`, `property_records.bbl` → `parcels.bbl`, `parcels.neighborhood` → `study_areas.name`, `rejected_records.run_id` → `ingestion_runs.id`). `tests/test_schema.py` encodes these same checks so they run on every future `pytest` — skipped gracefully (not failed) when `SUPABASE_DB_URL_DIRECT` isn't set, confirmed by temporarily hiding `.env` and re-running.
+
+`scripts/reset_db.py` is the documented reset path — drops all application tables (not the `postgis` extension) and re-runs migrations, gated behind a `--yes-drop-all-data` flag plus a typed host-name confirmation. It was written and reviewed but **not executed** this session: no local Docker/Postgres was available to test a truly from-scratch apply in isolation, and running it against the live instance would have destroyed M1's already-verified boundary/BBL data for a test that additive migrations already covered. The "fresh database" half of the exit criterion is therefore verified in the weaker sense that all 9 tables + constraints now exist correctly on the real target, not in the stronger sense of a from-scratch rebuild — worth doing once a disposable Postgres is available, or the next time a genuine reset is needed for another reason.
 
 ### M3 — PLUTO ingestion → `parcels`
 PLUTO is the parcel backbone every other source joins against, so it lands before any permit data. Build `pipeline/socrata.py` (token auth, `$limit`/`$offset` paging, retry with backoff) and `transforms/bbl.py` here — both are used by every later adapter. Filter to the M1 BBL set.
