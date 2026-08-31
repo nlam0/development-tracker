@@ -18,7 +18,7 @@
  * swapping `MAP_STYLE_URL` is the only change needed if one is made.
  */
 
-import { useCallback, useEffect, useRef } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import * as maplibregl from "maplibre-gl";
 import type { Map as MapLibreMap } from "maplibre-gl";
@@ -58,6 +58,7 @@ export default function MapView() {
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<MapLibreMap | null>(null);
   const loadedRef = useRef(false);
+  const [mapError, setMapError] = useState<string | null>(null);
 
   const refreshPermits = useCallback(() => {
     const map = mapRef.current;
@@ -84,6 +85,14 @@ export default function MapView() {
     });
     mapRef.current = map;
     map.addControl(new maplibregl.NavigationControl(), "top-right");
+
+    // MapLibre swallows most load failures (a bad tile, a blocked sprite/
+    // glyph request) internally and just renders less -- surface them
+    // instead of leaving a silently-incomplete map on screen.
+    map.on("error", (e: maplibregl.ErrorEvent) => {
+      console.error("MapLibre error:", e.error);
+      setMapError(e.error?.message ?? "Unknown map error");
+    });
 
     map.on("load", () => {
       map.addSource("study-areas", {
@@ -207,5 +216,14 @@ export default function MapView() {
     if (loadedRef.current) refreshPermits();
   }, [refreshPermits]);
 
-  return <div ref={containerRef} className="h-[70vh] w-full border border-border" />;
+  return (
+    <div className="relative">
+      {mapError && (
+        <p className="absolute top-2 left-2 z-10 max-w-md border border-red-700 bg-surface px-2 py-1 text-xs text-red-700">
+          Map error: {mapError}
+        </p>
+      )}
+      <div ref={containerRef} className="h-[70vh] w-full border border-border" />
+    </div>
+  );
 }
