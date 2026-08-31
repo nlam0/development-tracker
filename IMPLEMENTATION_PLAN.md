@@ -2,7 +2,7 @@
 
 Companion to `PRD.md`. The PRD defines *what* and *why*; this document defines *how*, in what order, and what is likely to go wrong. Section references like (PRD §8) point back to the spec.
 
-**Status:** pre-implementation. Repository currently contains `PRD.md`, `CLAUDE.md`, and this file. Not yet a git repository.
+**Status:** M0 and M1 complete. M0 scaffolding is committed and pushed (`origin/main`). M1's study areas are loaded into Supabase with a resolved BBL set of 1,944 parcels (Chinatown 501, Two Bridges 522, Lower East Side 921) -- see the M1 section below for how this compares to the pre-resolution estimate.
 
 All dataset IDs, field names, and data-quality findings below were verified against the live NYC Open Data API on 2026-08-31. See [Appendix A](#appendix-a--verified-source-reconnaissance) for the raw findings.
 
@@ -107,6 +107,12 @@ Derive the authoritative BBL set by point-in-polygon against PLUTO centroids and
 
 **Exit:** `study_areas` holds 3 named polygons with populated `definition_note`; a query returns the BBL set per neighborhood; boundaries render in a scratch MapLibre page and visibly follow NTA edges except at the documented split.
 
+**Done.** `pipeline/study_area/build_boundaries.py` reproduces `boundaries.geojson` from source (NTA 2020 dataset `9nt8-h7nd` + NYC DOT LION centerline `inkn-q76z`, filtered to `full_street_name='DIVISION ST'` in Manhattan) rather than treating the split as a one-off hand edit — re-running it is a full source-to-artifact rebuild and was verified to reproduce byte-identical geometry. The Chinatown/Two Bridges split line (flagged as still-to-specify in §6) is the Division Street centerline: Chinatown is the portion north of it, Two Bridges south, toward the bridge approaches. `pipeline/study_area/load_boundaries.py` upserts the artifact into `study_areas`; `pipeline/study_area/resolve.py` derives the BBL allowlist via PostGIS `ST_Contains` against PLUTO centroids and materializes it into `study_area_bbls` (added to the schema in §3, migration `0003_study_area_bbls.sql`).
+
+The resolved BBL set is **1,944 parcels** (Chinatown 501, Two Bridges 522, Lower East Side 921) against a 4,246-parcel bounding-box candidate pool — smaller than the ~3–4k figure M3 estimated from the looser "Manhattan blocks 100–400" reconnaissance query, because the actual study-area polygons are tighter than that block range. **M3's exit criterion below should be read as ~1,900–2,000 parcels**, not 3–4k.
+
+Verification: geometry validity, the split's area-partition property (no gaps or overlaps — checked against the source NTA polygon's exact area), and the three-name/definition_note invariants are covered by `tests/test_study_area_boundaries.py` (no network or DB required). Point-in-polygon assignment was additionally checked visually — a matplotlib plot of all three polygons overlaid with the resolved centroids, colored by assigned study area, confirmed clean containment with no cross-boundary leakage (Two Bridges sits correctly south of the Division St line toward the bridge approaches, Chinatown north of it, Lower East Side properly adjacent to the east). A `scripts/scratch/study_area_map.html` MapLibre page also exists per the milestone's literal wording, but wasn't rendered in a browser during this session (no headless browser available) — the matplotlib check substituted as the actual visual verification.
+
 ### M2 — Schema and migrations
 Apply §3's DDL as numbered migrations. Includes constraints and indexes, not just tables — the unique constraints are what make ingestion idempotent (PRD §14), so they ship with the schema rather than being retrofitted.
 
@@ -115,7 +121,7 @@ Apply §3's DDL as numbered migrations. Includes constraints and indexes, not ju
 ### M3 — PLUTO ingestion → `parcels`
 PLUTO is the parcel backbone every other source joins against, so it lands before any permit data. Build `pipeline/socrata.py` (token auth, `$limit`/`$offset` paging, retry with backoff) and `transforms/bbl.py` here — both are used by every later adapter. Filter to the M1 BBL set.
 
-**Exit:** ~3–4k study-area parcels loaded with zoning, land use, lot/building area, year built, units, lat/long; re-running changes `records_updated` but not row count.
+**Exit:** ~1,900–2,000 study-area parcels loaded with zoning, land use, lot/building area, year built, units, lat/long (M1's resolved `study_area_bbls` count, not the earlier loose block-range estimate — see M1); re-running changes `records_updated` but not row count.
 
 ### M4 — DOB NOW ingestion → `permits`
 The primary source (PRD §6). Incremental sync on `approved_date`. Handle the sentinel-value and null-BBL cases from Risk R1/R2. Write `ingestion_runs` rows on every execution including failures.
@@ -158,6 +164,17 @@ CREATE TABLE study_areas (
   created_at   TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX study_areas_geom_idx ON study_areas USING GIST (geom);
+
+-- The authoritative BBL allowlist, derived from study_areas via point-in-
+-- polygon against PLUTO centroids (M1). Every later adapter's "filter to
+-- study area" pipeline stage (PRD §8) reads from this table rather than
+-- re-deriving or hardcoding the study-area block/BBL set itself.
+CREATE TABLE study_area_bbls (
+  bbl           CHAR(10) PRIMARY KEY,
+  study_area_id INTEGER NOT NULL REFERENCES study_areas(id),
+  resolved_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX study_area_bbls_study_area_id_idx ON study_area_bbls (study_area_id);
 
 -- One row per tax lot, from PLUTO.
 CREATE TABLE parcels (
@@ -300,7 +317,7 @@ CREATE TABLE rejected_records (
 
 ### Additions beyond PRD §10
 
-The PRD's suggested schema is a starting point; five deliberate additions: `raw` (reprocessing without refetch), `category` (the map needs one canonical classification), `event_date` (cross-source chronological sort), `bbl_confidence` (honest condo joins), and `rejected_records` + cursor columns on `ingestion_runs` (PRD §14's "log malformed records" and incremental resume both need somewhere to live).
+The PRD's suggested schema is a starting point; six deliberate additions: `raw` (reprocessing without refetch), `category` (the map needs one canonical classification), `event_date` (cross-source chronological sort), `bbl_confidence` (honest condo joins), `rejected_records` + cursor columns on `ingestion_runs` (PRD §14's "log malformed records" and incremental resume both need somewhere to live), and `study_area_bbls` (the materialized point-in-polygon result every adapter's study-area filter reads from, added in M1).
 
 ---
 
@@ -410,8 +427,11 @@ Resolved 2026-08-31. Nothing here blocks implementation.
 
 ### Still to specify (during the milestone that needs it, not before)
 
-- **The Chinatown / Two Bridges split line** — a research judgment made during M1. Convention would run it roughly along the Bowery/St James Place corridor, with Two Bridges as the area south and east toward the bridge approaches, but the call is yours to make and document.
 - **ACS variable list** — pinned during M8. PRD §6 names the candidates (median household income, median gross rent, population, tenure); the specific ACS5 table codes get fixed then, since only the Census adapter depends on them.
+
+### Resolved during M1
+
+- **The Chinatown / Two Bridges split line** — settled on the Division Street centerline rather than the Bowery/St James Place corridor originally floated here. Division St is the conventional dividing line in local usage and is available as clean, mergeable centerline geometry from NYC DOT's LION dataset, which made it both more defensible and more reproducible than a hand-drawn approximation. See the M1 section above.
 
 ---
 
