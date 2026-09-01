@@ -73,32 +73,19 @@ npm run lint
 
 ## Deployment
 
-Two separate Vercel projects, not one -- `api/`'s internal imports (`from api.db import ...`) need the repo root as their deployment root, which doesn't line up with Vercel's single-project convention for a Next.js app plus Python functions sharing one root directory. Splitting them also matches CLAUDE.md's architecture, which already treats `api/` and `web/` as independent halves.
-
-**Both projects deploy on push to `main`.** They share one repo, distinguished by each project's **Root Directory** -- and each needs its own `vercel.json` at that root, which is the non-obvious part:
-
-| Project | Root Directory | Config it reads | Framework |
-|---|---|---|---|
-| `division` | `web` | `web/vercel.json` | Next.js |
-| `division-api` | `.` (repo root) | `vercel.json` + `requirements.txt` | Other (Python) |
-
-`division-api` must stay at the repo root -- **not** `api/` -- because `api/main.py` uses absolute imports (`from api.db import ...`, `from api.routers import ...`) that need the repo root on the import path, and because the `vercel.json` and `requirements.txt` declaring its Python build live there. (It does not import from `pipeline/`; the constraint is the absolute `api.*` imports.)
-
-`web/vercel.json` exists specifically so `division` cannot pick up the repo-root one. That root config declares a top-level `builds` array for the Python function, which puts Vercel into **legacy builds mode** and disables zero-config framework builds. When `division` had no `vercel.json` of its own, a git build inherited it: `src: "api/main.py"` matched nothing inside `web/`, so Next.js compiled but Vercel registered **zero build outputs**, and the root config's catch-all route pointed every request at a file that wasn't there -- every page 404'd while raw `public/` files still served. Two settings therefore have to stay in sync: `division`'s Root Directory (`web`) and the presence of `web/vercel.json`.
-
-The app is served only under `/division`; the origin root is not a route. `next.config.ts` redirects `/` to `/division` so the bare deployment URL and the Vercel dashboard's production preview (which requests the root) don't look like a broken deployment.
-
-Manual deploys still work as a fallback:
+Two Vercel projects, deployed from the CLI. Both use the repo root as their Vercel Root Directory; what differs is the directory you run the command from.
 
 ```bash
-cd web && vercel deploy --prod --yes   # division
-cd ..  && vercel deploy --prod --yes   # division-api (must run from repo root)
+cd web && vercel deploy --prod --yes   # division      -> https://division-theta.vercel.app
+cd ..  && vercel deploy --prod --yes   # division-api  -> https://division-api-one.vercel.app
 ```
 
-- **`division`** (`web/`) -- the Next.js frontend. Deployed with `web/` as the Vercel project's root directory. **Live:** https://division-theta.vercel.app. `next.config.ts` sets `basePath: "/division"`, since it's hosted at `nicklam.co/division` rather than its own subdomain. `NEXT_PUBLIC_API_URL` is set to `division-api`'s production URL.
-- **`division-api`** (`api/`) -- the FastAPI backend. Deployed with the *repo root* as the Vercel project's root directory (not `api/`), via the root-level `vercel.json` and `requirements.txt` -- so `api/`'s absolute imports resolve exactly as they do locally, with zero code changes for deployment. **Live:** https://division-api-one.vercel.app. `SUPABASE_DB_URL_POOLED` (Risk R7) and `CORS_ALLOWED_ORIGINS` are set as environment variables; the latter is comma-separated and currently `http://localhost:3000,https://division-theta.vercel.app,https://nicklam.co,https://www.nicklam.co` -- `nicklam.co` (no `www`) 308-redirects to `www.nicklam.co`, so the `www` origin is the one that actually matters for a browser landing on `nicklam.co/division`, but both are allowed.
+- **`division`** (`web/`) — the Next.js frontend. `next.config.ts` sets `basePath: "/division"`, since it's served at `nicklam.co/division` rather than its own subdomain, and redirects the bare origin root to `/division` so the deployment URL isn't a 404. `NEXT_PUBLIC_API_URL` points at `division-api`.
+- **`division-api`** (`api/`) — the FastAPI backend, built from the repo root via the root `vercel.json` and `requirements.txt`. It must deploy from the repo root, **not** `api/`: `api/main.py` uses absolute imports (`from api.db import ...`, `from api.routers import ...`) that need the repo root on the import path. Environment: `SUPABASE_DB_URL_POOLED` (Risk R7) and `CORS_ALLOWED_ORIGINS` (comma-separated; currently localhost, the Vercel alias, and both `nicklam.co` and `www.nicklam.co` — the apex 308-redirects to `www`, so `www` is the origin browsers actually send).
 
-nicklam.co itself is a separate, already-live Vercel project (`my-site`), not part of this repo -- not touched here. `nicklam.co/division` is served via a rewrite added to that project's own `vercel.json`:
+Neither project is connected to GitHub. Auto-deploy was tried and deliberately reverted — it required `division` to use Root Directory `web` plus its own `web/vercel.json`, because otherwise a git build inherited the repo-root `vercel.json` (the Python API's config, which puts Vercel in legacy-builds mode) and deployed the API over the frontend. Two coupled settings for no real gain on a single-maintainer project; `IMPLEMENTATION_PLAN.md`'s M7 section has the full history if it's ever revisited.
+
+nicklam.co itself is a separate, already-live Vercel project (`my-site`), not part of this repo. `nicklam.co/division` is served via a rewrite in that project's own `vercel.json`:
 
 ```json
 {
