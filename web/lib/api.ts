@@ -13,8 +13,8 @@ import type {
   ActivityFeedResponse,
   MapFeatureCollection,
   Parcel,
-  Permit,
-  PropertyRecord,
+  ParcelPermitsResponse,
+  ParcelRecordsResponse,
   SortMode,
   StatsResponse,
   StudyAreaFeatureCollection,
@@ -80,14 +80,27 @@ export function getParcel(bbl: string): Promise<Parcel> {
   return request<Parcel>(`/api/parcels/${bbl}`);
 }
 
-export function getParcelPermits(bbl: string, limit = 100): Promise<Permit[]> {
-  const params = new URLSearchParams({ limit: String(limit) });
-  return request<Permit[]>(`/api/parcels/${bbl}/permits`, params);
+/**
+ * A page of a parcel's permits plus the total it came from. The total is
+ * the point: the default page is 100 and one study-area BBL carries 555,
+ * so a caller that counted the returned array was under-reporting.
+ */
+export function getParcelPermits(
+  bbl: string,
+  opts: { limit?: number; offset?: number } = {},
+): Promise<ParcelPermitsResponse> {
+  const params = new URLSearchParams({ limit: String(opts.limit ?? 100) });
+  if (opts.offset) params.set("offset", String(opts.offset));
+  return request<ParcelPermitsResponse>(`/api/parcels/${bbl}/permits`, params);
 }
 
-export function getParcelRecords(bbl: string, limit = 100): Promise<PropertyRecord[]> {
-  const params = new URLSearchParams({ limit: String(limit) });
-  return request<PropertyRecord[]>(`/api/parcels/${bbl}/records`, params);
+export function getParcelRecords(
+  bbl: string,
+  opts: { limit?: number; offset?: number } = {},
+): Promise<ParcelRecordsResponse> {
+  const params = new URLSearchParams({ limit: String(opts.limit ?? 100) });
+  if (opts.offset) params.set("offset", String(opts.offset));
+  return request<ParcelRecordsResponse>(`/api/parcels/${bbl}/records`, params);
 }
 
 export function getStats(neighborhood?: string): Promise<StatsResponse> {

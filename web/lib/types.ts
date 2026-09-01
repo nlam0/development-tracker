@@ -146,6 +146,17 @@ export interface StatsWindow {
   blocks_with_multiple_filings: BlockActivity[];
 }
 
+export interface ParcelPermitsResponse {
+  items: Permit[];
+  /** All permits on this parcel, not just the returned page. */
+  total: number;
+}
+
+export interface ParcelRecordsResponse {
+  items: PropertyRecord[];
+  total: number;
+}
+
 export interface DataCoverage {
   latest_event_date: string | null;
   last_successful_ingest: string | null;

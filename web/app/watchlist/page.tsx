@@ -23,7 +23,7 @@ function EntryActivity({ entry }: { entry: WatchlistEntry }) {
   useEffect(() => {
     if (entry.type === "parcel") {
       getParcelPermits(entry.value)
-        .then(setPermits)
+        .then((res) => setPermits(res.items))
         .catch(() => setError(true));
     } else if (entry.type === "block") {
       getActivity({ ...EMPTY_FILTERS, block: entry.value }, { limit: 50 })

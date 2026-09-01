@@ -45,6 +45,25 @@ class ActivityFeedResponse(BaseModel):
     next_cursor: str | None
 
 
+class ParcelPermitsResponse(BaseModel):
+    """A page of a parcel's permits, with the count the page came from.
+
+    `total` is not decoration: these endpoints default to 100 rows and one
+    BBL in the study area carries 555 permits, so a caller that treated the
+    returned list as complete under-reported eight parcels. Returning the
+    total makes a partial page self-describing rather than something the
+    caller has to already know to ask about.
+    """
+
+    items: list[PermitOut]
+    total: int
+
+
+class ParcelRecordsResponse(BaseModel):
+    items: list["PropertyRecordOut"]
+    total: int
+
+
 class ParcelOut(BaseModel):
     bbl: str
     borough: int

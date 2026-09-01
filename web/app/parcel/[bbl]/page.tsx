@@ -15,7 +15,12 @@ export default async function ParcelPage(props: PageProps<"/parcel/[bbl]">) {
     if (err instanceof ApiError && err.status === 404) notFound();
     throw err;
   }
-  const [permits, records] = await Promise.all([getParcelPermits(bbl), getParcelRecords(bbl)]);
+  const [permitPage, recordPage] = await Promise.all([
+    getParcelPermits(bbl),
+    getParcelRecords(bbl),
+  ]);
+  const permits = permitPage.items;
+  const records = recordPage.items;
 
   const block = blockFromBbl(bbl);
 
@@ -68,8 +73,17 @@ export default async function ParcelPage(props: PageProps<"/parcel/[bbl]">) {
 
       <section>
         <h2 className="mb-2 text-sm font-semibold uppercase tracking-wide text-muted">
-          Recent development ({permits.length})
+          Recent development ({permitPage.total.toLocaleString()})
         </h2>
+        {/* Eight study-area parcels carry more than one page of permits --
+            the busiest has 555 -- so a page that rendered its slice under a
+            total-shaped heading would misstate the record. */}
+        {permits.length < permitPage.total && (
+          <p className="mb-2 text-xs text-muted">
+            Showing the {permits.length.toLocaleString()} most recent of{" "}
+            {permitPage.total.toLocaleString()} permits on this parcel.
+          </p>
+        )}
         {permits.length === 0 ? (
           <p className="border border-border bg-surface p-3 text-sm text-muted">
             No permits on record for this parcel.
