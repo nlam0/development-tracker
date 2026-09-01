@@ -4,7 +4,7 @@ Lower Manhattan Development Tracker began as a research tool for studying neighb
 
 Deployed as **Division**, named for Division Street -- the street decision D1 uses as the boundary hand-splitting the official `Chinatown-Two Bridges` NTA into the two separate study areas this tool tracks (see `IMPLEMENTATION_PLAN.md` §6 and `/methodology`). Hosted at `nicklam.co/division`.
 
-**Status:** M0 (foundation), M1 (study-area definition), M2 (schema and migrations), M3 (PLUTO ingestion), M4 (DOB NOW ingestion), M5 (read API), and M6 (frontend) complete, plus a post-M3 data-integrity audit. The study area resolves to 1,954 parcels across the three neighborhoods, carrying 10,364 DOB NOW permits, served through a FastAPI read layer (`api/`) and a Next.js frontend (`web/`) -- feed, map, parcel pages, watchlist, and methodology. See `IMPLEMENTATION_PLAN.md` for the full build plan and milestone sequence.
+**Status:** M0 (foundation), M1 (study-area definition), M2 (schema and migrations), M3 (PLUTO ingestion), M4 (DOB NOW ingestion), M5 (read API), M6 (frontend), and M7 (deployment) complete, plus a post-M3 data-integrity audit. Next is M8 (secondary sources: DOB legacy, ACRIS, Census). The study area resolves to 1,954 parcels across the three neighborhoods, carrying 10,364 DOB NOW permits, served through a FastAPI read layer (`api/`) and a Next.js frontend (`web/`) -- feed, map, parcel pages, watchlist, and methodology. See `IMPLEMENTATION_PLAN.md` for the full build plan and milestone sequence.
 
 ## Documents
 

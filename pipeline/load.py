@@ -90,11 +90,14 @@ def finish_run(
 def purge_rejected_for_source(conn, source: str) -> int:
     """Clear a full-reload source's previous rejects. Returns rows deleted.
 
-    Only correct for sources that re-fetch their whole record set every run
-    (PLUTO): the current run's rejects are then the complete reject set, and
-    keeping earlier ones would re-log the same malformed record every day
-    forever. Incremental sources (DOB NOW, DOB legacy) must NOT call this --
-    their earlier rejects concern records the current run never refetched.
+    Only correct for sources that re-fetch their whole record set every run:
+    the current run's rejects are then the complete reject set, and keeping
+    earlier ones would re-log the same malformed record every day forever.
+    Both current adapters qualify -- PLUTO, and DOB NOW, which ended up a
+    full reload of the study area's current state rather than the
+    `approved_date` cursor M4 originally sketched (see dob_now.py's module
+    docstring). A genuinely incremental source must NOT call this: its
+    earlier rejects concern records the current run never refetched.
     """
     with conn.cursor() as cur:
         cur.execute("DELETE FROM rejected_records WHERE source = %s;", (source,))
