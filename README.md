@@ -86,6 +86,8 @@ Two separate Vercel projects, not one -- `api/`'s internal imports (`from api.db
 
 `web/vercel.json` exists specifically so `division` cannot pick up the repo-root one. That root config declares a top-level `builds` array for the Python function, which puts Vercel into **legacy builds mode** and disables zero-config framework builds. When `division` had no `vercel.json` of its own, a git build inherited it: `src: "api/main.py"` matched nothing inside `web/`, so Next.js compiled but Vercel registered **zero build outputs**, and the root config's catch-all route pointed every request at a file that wasn't there -- every page 404'd while raw `public/` files still served. Two settings therefore have to stay in sync: `division`'s Root Directory (`web`) and the presence of `web/vercel.json`.
 
+The app is served only under `/division`; the origin root is not a route. `next.config.ts` redirects `/` to `/division` so the bare deployment URL and the Vercel dashboard's production preview (which requests the root) don't look like a broken deployment.
+
 Manual deploys still work as a fallback:
 
 ```bash
