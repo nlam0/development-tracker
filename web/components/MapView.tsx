@@ -42,7 +42,16 @@ const INITIAL_ZOOM = 14.5;
 // scripts/copy-maplibre-worker.mjs, run on `npm install`) sidesteps the
 // bundler entirely. Must run before any Map is constructed, so it's set
 // at module scope rather than inside the component.
-maplibregl.setWorkerUrl("/maplibre/maplibre-gl-worker.mjs");
+//
+// The basePath prefix is required: public/ assets are served under it,
+// but Next only auto-applies basePath to next/link and next/navigation,
+// never to a plain string like this one. Without it the request 404s to
+// an HTML page and MapLibre's blob-worker fallback hangs on that response
+// instead of failing loudly -- the map then renders its background and
+// nothing else, with no console error. next.config.ts owns the value.
+maplibregl.setWorkerUrl(
+  `${process.env.NEXT_PUBLIC_BASE_PATH ?? ""}/maplibre/maplibre-gl-worker.mjs`,
+);
 
 // maplibre-gl's published types don't export an expression type to
 // annotate this with -- it's passed straight into a paint spec below,
