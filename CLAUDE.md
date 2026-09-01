@@ -61,7 +61,9 @@ Two halves that must not become coupled: **ingestion** (Python, scheduled, write
 
 Every adapter follows the same stage order (PRD §8): fetch → validate → normalize → resolve BBL → filter to study area → deduplicate → upsert → record the run. Ingestion must be idempotent — re-running must never duplicate rows (upsert on the natural key: `bbl` for parcels, `source` + `external_id` for permits). Log malformed records to `rejected_records` rather than dropping them; fail the Actions run visibly (non-zero exit) rather than swallowing errors.
 
-Both current adapters are **full reloads** of the study area's current upstream state, not incremental cursors — a permit's status changes after it first appears, and new spatial-only matches require re-scanning the bounding box regardless of cursor position. Full-reload sources call `purge_rejected_for_source`; a future incremental source must not.
+Both current adapters are **full reloads** of the study area's current upstream state, not incremental cursors — a permit's status changes after it first appears, and new spatial-only matches require re-scanning the bounding box regardless of cursor position. Full-reload sources call `purge_rejected_for_source` and `mark_absent_after_full_reload`; a future incremental source must not call either.
+
+Records that vanish upstream are **marked, never deleted**: `is_current` goes false for rows a completed full scan didn't see, the upsert restores it, and the count lands in `ingestion_runs.records_marked_absent`. The sweep is scoped to the source that ran, and is only safe because each adapter already raises on a zero-record fetch — do not remove that guard.
 
 `upsert_parcels`/`upsert_permits` batch through `executemany` (~72s vs ~0.2s per 2,000 rows against Supabase) and require **at most one row per conflict key per batch** — duplicates raise `CardinalityViolation`.
 

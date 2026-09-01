@@ -46,6 +46,7 @@ from psycopg.types.json import Jsonb
 
 from pipeline.load import (
     finish_run,
+    mark_absent_after_full_reload,
     purge_rejected_for_source,
     record_rejected,
     start_run,
@@ -358,7 +359,7 @@ def main() -> int:
     app_token = os.environ.get("SOCRATA_APP_TOKEN")
 
     with psycopg.connect(db_url, connect_timeout=10) as conn:
-        run_id = start_run(conn, SOURCE)
+        run_id, run_started_at = start_run(conn, SOURCE)
         try:
             study_area_bbls = _load_study_area_bbls(conn)
             print(f"study area has {len(study_area_bbls)} resolved BBLs")
@@ -393,6 +394,15 @@ def main() -> int:
             # rejects supersede the last one's.
             purge_rejected_for_source(conn, SOURCE)
             record_rejected(conn, run_id, SOURCE, rejected)
+            # Scoped to source='dob_now': this run re-fetched DOB NOW's whole
+            # study-area set and nothing else, so it can only speak to its own
+            # rows. Once DOB legacy shares this table, an unscoped sweep here
+            # would mark every legacy permit absent on the first DOB NOW run.
+            # Safe against a wholesale wipe only because the zero-record guard
+            # above already rejected an empty fetch.
+            marked_absent = mark_absent_after_full_reload(
+                conn, "permits", run_started_at, source=SOURCE
+            )
             finish_run(
                 conn,
                 run_id,
@@ -401,6 +411,7 @@ def main() -> int:
                 records_inserted=inserted,
                 records_updated=updated,
                 records_rejected=len(rejected),
+                records_marked_absent=marked_absent,
             )
             conn.commit()
         except Exception as exc:
@@ -412,7 +423,8 @@ def main() -> int:
 
     print(
         f"received {received}, in study area {len(membership)}, "
-        f"inserted {inserted}, updated {updated}, rejected {len(rejected)}"
+        f"inserted {inserted}, updated {updated}, rejected {len(rejected)}, "
+        f"marked absent {marked_absent}"
     )
     return 0
 

@@ -17,8 +17,13 @@ STALE_RUN_MESSAGE = (
 )
 
 
-def start_run(conn, source: str, *, cursor_start: str | None = None) -> int:
+def start_run(conn, source: str, *, cursor_start: str | None = None):
     """Insert a 'running' ingestion_runs row and commit it immediately.
+
+    Returns (run_id, started_at). `started_at` is the database clock at
+    insert, and this row commits before any upsert opens its transaction --
+    which is what makes it a valid "did this run touch that row?" boundary
+    for mark_absent_after_full_reload.
 
     Committed on its own, ahead of any fetch/transform work, so a run that
     crashes mid-fetch still leaves durable evidence it started (Risk R8: a
@@ -43,13 +48,13 @@ def start_run(conn, source: str, *, cursor_start: str | None = None) -> int:
             """
             INSERT INTO ingestion_runs (source, cursor_start, status)
             VALUES (%s, %s, 'running')
-            RETURNING id;
+            RETURNING id, started_at;
             """,
             (source, cursor_start),
         )
-        run_id = cur.fetchone()[0]
+        run_id, started_at = cur.fetchone()
     conn.commit()
-    return run_id
+    return run_id, started_at
 
 
 def finish_run(
@@ -61,6 +66,7 @@ def finish_run(
     records_inserted: int = 0,
     records_updated: int = 0,
     records_rejected: int = 0,
+    records_marked_absent: int = 0,
     cursor_end: str | None = None,
     error_message: str | None = None,
 ) -> None:
@@ -71,7 +77,7 @@ def finish_run(
             SET completed_at = now(), status = %s, cursor_end = %s,
                 records_received = %s, records_inserted = %s,
                 records_updated = %s, records_rejected = %s,
-                error_message = %s
+                records_marked_absent = %s, error_message = %s
             WHERE id = %s;
             """,
             (
@@ -81,6 +87,7 @@ def finish_run(
                 records_inserted,
                 records_updated,
                 records_rejected,
+                records_marked_absent,
                 error_message,
                 run_id,
             ),
@@ -101,6 +108,46 @@ def purge_rejected_for_source(conn, source: str) -> int:
     """
     with conn.cursor() as cur:
         cur.execute("DELETE FROM rejected_records WHERE source = %s;", (source,))
+        return cur.rowcount
+
+
+def mark_absent_after_full_reload(
+    conn, table: str, run_started_at, *, source: str | None = None
+) -> int:
+    """Flag rows a completed full scan didn't see. Returns rows marked.
+
+    Only correct for a full-reload source, and only after its upserts have
+    run: the test is `retrieved_at < run_started_at`, and both upsert
+    helpers set `retrieved_at = now()`, so anything still carrying an
+    older timestamp is a row this run's fetch did not return.
+
+    `run_started_at` must come from the database clock, not the client's --
+    start_run's `started_at` is the value to pass. It commits before any
+    upsert opens its transaction, so every row this run touches is stamped
+    at or after it.
+
+    That ordering is the whole precondition, and it rests on `now()` being
+    transaction start time rather than statement time: rows written in the
+    same transaction as start_run share its exact timestamp and the strict
+    `<` leaves them alone. Safe in both directions for the adapters (each
+    run is its own process), but a caller that seeded rows and started a
+    run in one transaction would see nothing marked.
+
+    Marking, not deleting (see db/migrations/0013): a permit that
+    disappears from DOB's published set is a finding in its own right, and
+    a row that reappears is set current again by the upsert, so this is
+    reversible in both directions.
+    """
+    where = ["retrieved_at < %s", "is_current"]
+    params: list = [run_started_at]
+    if source is not None:
+        where.append("source = %s")
+        params.append(source)
+    with conn.cursor() as cur:
+        cur.execute(
+            f"UPDATE {table} SET is_current = FALSE WHERE {' AND '.join(where)};",
+            params,
+        )
         return cur.rowcount
 
 
@@ -203,7 +250,8 @@ def upsert_parcels(conn, rows: Iterable[dict]) -> tuple[int, int]:
                 ST_SetSRID(
                     ST_MakePoint(%(longitude)s::float8, %(latitude)s::float8), 4326),
                 now())
-        ON CONFLICT (bbl) DO UPDATE SET {set_clause}, geom = EXCLUDED.geom, retrieved_at = now()
+        ON CONFLICT (bbl) DO UPDATE SET {set_clause}, geom = EXCLUDED.geom,
+            retrieved_at = now(), is_current = TRUE
         RETURNING (xmax = 0) AS inserted;
     """
     with conn.cursor() as cur:
@@ -263,7 +311,7 @@ def upsert_permits(conn, rows: Iterable[dict]) -> tuple[int, int]:
                     ST_MakePoint(%(longitude)s::float8, %(latitude)s::float8), 4326),
                 now())
         ON CONFLICT (source, external_id) DO UPDATE SET {set_clause}, geom = EXCLUDED.geom,
-            retrieved_at = now()
+            retrieved_at = now(), is_current = TRUE
         RETURNING (xmax = 0) AS inserted;
     """
     with conn.cursor() as cur:

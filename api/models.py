@@ -38,6 +38,10 @@ class PermitOut(BaseModel):
     longitude: float | None
     owner_name: str | None
     retrieved_at: datetime
+    # False once a full reload stops seeing this permit upstream (revoked,
+    # superseded, or withdrawn). Surfaced rather than filtered: a permit
+    # that disappears from DOB's published set is itself a research finding.
+    is_current: bool
 
 
 class ActivityFeedResponse(BaseModel):

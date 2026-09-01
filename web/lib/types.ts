@@ -37,6 +37,8 @@ export interface Permit {
   longitude: number | null;
   owner_name: string | null;
   retrieved_at: string;
+  /** False once a full reload stops seeing this permit upstream. */
+  is_current: boolean;
 }
 
 export interface ActivityFeedResponse {

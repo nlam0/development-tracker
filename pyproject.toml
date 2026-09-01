@@ -24,6 +24,9 @@ dev = [
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
+markers = [
+    "writes_db: writes to the database; needs write credentials. CI runs with read-only ones and deselects these via -m 'not writes_db'.",
+]
 
 [tool.ruff]
 line-length = 100

@@ -45,7 +45,7 @@ PERMIT_COLUMNS = """
     id, source, external_id, bbl, neighborhood, study_area_match, bin, address,
     filing_number, permit_type, work_type, category, filing_reason, status,
     description, estimated_cost, approved_date, issued_date, expired_date,
-    event_date, latitude, longitude, owner_name, retrieved_at
+    event_date, latitude, longitude, owner_name, retrieved_at, is_current
 """
 
 RECORD_COLUMNS = """

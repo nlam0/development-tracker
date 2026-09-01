@@ -20,6 +20,7 @@ from dotenv import load_dotenv
 
 from pipeline.load import (
     finish_run,
+    mark_absent_after_full_reload,
     purge_rejected_for_source,
     record_rejected,
     start_run,
@@ -162,7 +163,7 @@ def main() -> int:
     app_token = os.environ.get("SOCRATA_APP_TOKEN")
 
     with psycopg.connect(db_url, connect_timeout=10) as conn:
-        run_id = start_run(conn, SOURCE, cursor_start=PINNED_VERSION)
+        run_id, run_started_at = start_run(conn, SOURCE, cursor_start=PINNED_VERSION)
         try:
             study_area_bbls = _load_study_area_bbls(conn)
             print(f"study area has {len(study_area_bbls)} resolved BBLs")
@@ -191,6 +192,10 @@ def main() -> int:
             # re-logs the same malformed rows forever.
             purge_rejected_for_source(conn, SOURCE)
             record_rejected(conn, run_id, SOURCE, rejected)
+            # Safe only because the zero-record guard above already ruled out
+            # an empty fetch: without it, an upstream outage that returned
+            # nothing would mark every parcel in the study area absent.
+            marked_absent = mark_absent_after_full_reload(conn, "parcels", run_started_at)
             finish_run(
                 conn,
                 run_id,
@@ -200,6 +205,7 @@ def main() -> int:
                 records_inserted=inserted,
                 records_updated=updated,
                 records_rejected=len(rejected),
+                records_marked_absent=marked_absent,
             )
             conn.commit()
         except Exception as exc:
@@ -211,7 +217,8 @@ def main() -> int:
 
     print(
         f"received {received}, matched study area {len(rows_by_bbl)}, "
-        f"inserted {inserted}, updated {updated}, rejected {len(rejected)}"
+        f"inserted {inserted}, updated {updated}, rejected {len(rejected)}, "
+        f"marked absent {marked_absent}"
     )
     return 0
 
