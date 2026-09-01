@@ -1,0 +1,39 @@
+name: Daily ingestion
+
+# PRD §13: run ingestion once per day, fail visibly (non-zero exit) rather
+# than swallowing errors. PLUTO runs before DOB NOW in the same job --
+# permits.bbl is an FK to parcels.bbl (§3), so parcels needs to be current
+# first. Both adapters already return 1 on failure (pipeline/sources/*.py,
+# propagated by pipeline/run.py's sys.exit(main())), so a failed step here
+# fails the job and the workflow run shows red, no extra plumbing needed.
+
+on:
+  schedule:
+    - cron: "0 9 * * *" # 09:00 UTC daily
+  workflow_dispatch: {} # manual trigger, e.g. after a schema change
+
+jobs:
+  ingest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -e .
+
+      - name: Ingest PLUTO (parcels)
+        env:
+          SOCRATA_APP_TOKEN: ${{ secrets.SOCRATA_APP_TOKEN }}
+          SUPABASE_DB_URL_DIRECT: ${{ secrets.SUPABASE_DB_URL_DIRECT }}
+        run: python -m pipeline.run --source pluto
+
+      - name: Ingest DOB NOW (permits)
+        env:
+          SOCRATA_APP_TOKEN: ${{ secrets.SOCRATA_APP_TOKEN }}
+          SUPABASE_DB_URL_DIRECT: ${{ secrets.SUPABASE_DB_URL_DIRECT }}
+        run: python -m pipeline.run --source dob_now

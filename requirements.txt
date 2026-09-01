@@ -1,0 +1,10 @@
+# Runtime dependencies for api/ on Vercel (@vercel/python -- see vercel.json).
+# Not pyproject.toml's full dependency list: pipeline/'s deps (requests,
+# shapely, pydantic-settings) and uvicorn (Vercel wraps the ASGI app
+# itself; it doesn't run a uvicorn server) are deliberately excluded --
+# api/ never imports pipeline/, and this file's only job is the API
+# function's cold-start install.
+fastapi>=0.115
+pydantic>=2.9
+psycopg[binary,pool]>=3.2
+python-dotenv>=1.0

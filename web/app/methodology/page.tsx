@@ -15,6 +15,12 @@ export default function MethodologyPage() {
           activity automatically, built for a single researcher rather than as a general-purpose
           real-estate platform.
         </p>
+        <p className="mt-2">
+          It&apos;s deployed under the name <strong>Division</strong>, for Division Street -- the
+          street used to hand-split the official <code>Chinatown-Two Bridges</code> neighborhood
+          area into the two separate study areas this tool tracks (see &ldquo;Study
+          geography&rdquo; below).
+        </p>
       </Section>
 
       <Section title="Study geography">

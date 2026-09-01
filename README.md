@@ -1,6 +1,8 @@
-# Lower Manhattan Development Tracker
+# Lower Manhattan Development Tracker (Division)
 
 Lower Manhattan Development Tracker began as a research tool for studying neighborhood change in Chinatown and Two Bridges. NYC development information is spread across several independently structured public datasets, making repeated parcel-level research cumbersome. The project combines permitting, land-use, property, and demographic records into a single research interface and automatically monitors new development activity.
+
+Deployed as **Division**, named for Division Street -- the street decision D1 uses as the boundary hand-splitting the official `Chinatown-Two Bridges` NTA into the two separate study areas this tool tracks (see `IMPLEMENTATION_PLAN.md` §6 and `/methodology`). Hosted at `nicklam.co/division`.
 
 **Status:** M0 (foundation), M1 (study-area definition), M2 (schema and migrations), M3 (PLUTO ingestion), M4 (DOB NOW ingestion), M5 (read API), and M6 (frontend) complete, plus a post-M3 data-integrity audit. The study area resolves to 1,954 parcels across the three neighborhoods, carrying 10,364 DOB NOW permits, served through a FastAPI read layer (`api/`) and a Next.js frontend (`web/`) -- feed, map, parcel pages, watchlist, and methodology. See `IMPLEMENTATION_PLAN.md` for the full build plan and milestone sequence.
 
@@ -64,11 +66,30 @@ ruff check .                 # lint
 cd web
 npm install
 cp .env.example .env.local   # NEXT_PUBLIC_API_URL, defaults to http://localhost:8000
-npm run dev     # http://localhost:3000 -- run `uvicorn api.main:app --reload` alongside it
+npm run dev     # http://localhost:3000/division (basePath -- see next.config.ts) -- run `uvicorn api.main:app --reload` alongside it
 npm run build   # production build
 npm run lint
 ```
 
+## Deployment
+
+Two separate Vercel projects, not one -- `api/`'s internal imports (`from api.db import ...`) need the repo root as their deployment root, which doesn't line up with Vercel's single-project convention for a Next.js app plus Python functions sharing one root directory. Splitting them also matches CLAUDE.md's architecture, which already treats `api/` and `web/` as independent halves.
+
+- **`division`** (`web/`) -- the Next.js frontend. Deployed with `web/` as the Vercel project's root directory. `next.config.ts` sets `basePath: "/division"`, since it's hosted at `nicklam.co/division` rather than its own subdomain. Set `NEXT_PUBLIC_API_URL` to the `division-api` project's production URL.
+- **`division-api`** (`api/`) -- the FastAPI backend. Deployed with the *repo root* as the Vercel project's root directory (not `api/`), via the root-level `vercel.json` and `requirements.txt` -- so `api/`'s absolute imports resolve exactly as they do locally, with zero code changes for deployment. Set `SUPABASE_DB_URL_POOLED` (Risk R7) and `CORS_ALLOWED_ORIGINS` (comma-separated; must include `division`'s production URL and, once wired up, `https://nicklam.co`) as environment variables.
+
+nicklam.co itself is a separate, already-live Vercel project (`my-site`), not part of this repo. Making `nicklam.co/division` work means adding a rewrite there once `division` has a production URL:
+
+```json
+{
+  "rewrites": [
+    { "source": "/division/:path*", "destination": "https://<division-production-url>/division/:path*" }
+  ]
+}
+```
+
+Scheduled ingestion is separate from both: `.github/workflows/ingest.yml` runs `pluto` then `dob_now` daily via GitHub Actions (PRD §13), using repo secrets `SOCRATA_APP_TOKEN` and `SUPABASE_DB_URL_DIRECT` (the direct connection, not the pooler -- ingestion is a long-lived process, see Risk R7). A failed adapter run exits non-zero and fails the workflow visibly rather than swallowing the error.
+
 ## Limitations
 
-Study-area boundaries (Chinatown, Two Bridges, adjacent Lower East Side) are researcher-defined, not official administrative geography — see `/methodology` and `IMPLEMENTATION_PLAN.md` §6 (decision D1) for how they were drawn. Which parcels fall inside those boundaries is also a judgment: most are resolved by point-in-polygon against parcel centroids, while lots PLUTO gives no centroid for are admitted by block membership, a weaker claim recorded per row (decision D6). The same is true of permits: most are matched to the study area by their parcel's BBL, but 279 of 10,364 have no BBL the allowlist can reach (a null BBL, a condo unit lot, or a merged/demapped lot) and are matched instead by their own point falling inside a study-area polygon (decision D7) — such a permit carries a null `bbl` and appears in the feed and on the map, but not on any parcel page or `/api/parcels/{bbl}/permits` response, since there is no parcel for it to be a sub-resource of. `GET /api/parcels/{bbl}/records` and `/api/stats`'s digest windows are scoped to `permits` only and will return no ACRIS activity until M8 loads `property_records`. The watchlist can bookmark a parcel or a block with a real activity feed behind each, but a free-text address bookmark is a note only — there's no address-to-BBL matching (a deliberate scope decision, not an oversight; see R2 and the M6 section). The map's basemap is MapLibre's public demo style, a placeholder pending a real basemap/tile-provider decision. Other known data-quality caveats (BBL format divergence, ACRIS condo-lot matching, census tract vintage discontinuities) are documented in `IMPLEMENTATION_PLAN.md` §5.
+Study-area boundaries (Chinatown, Two Bridges, adjacent Lower East Side) are researcher-defined, not official administrative geography — see `/methodology` and `IMPLEMENTATION_PLAN.md` §6 (decision D1) for how they were drawn. Which parcels fall inside those boundaries is also a judgment: most are resolved by point-in-polygon against parcel centroids, while lots PLUTO gives no centroid for are admitted by block membership, a weaker claim recorded per row (decision D6). The same is true of permits: most are matched to the study area by their parcel's BBL, but 279 of 10,364 have no BBL the allowlist can reach (a null BBL, a condo unit lot, or a merged/demapped lot) and are matched instead by their own point falling inside a study-area polygon (decision D7) — such a permit carries a null `bbl` and appears in the feed and on the map, but not on any parcel page or `/api/parcels/{bbl}/permits` response, since there is no parcel for it to be a sub-resource of. `GET /api/parcels/{bbl}/records` and `/api/stats`'s digest windows are scoped to `permits` only and will return no ACRIS activity until M8 loads `property_records`. The watchlist can bookmark a parcel or a block with a real activity feed behind each, but a free-text address bookmark is a note only — there's no address-to-BBL matching (a deliberate scope decision, not an oversight; see R2 and the M6 section). The map's basemap is OpenFreeMap's free "Positron" style, a default pending a deliberate basemap/tile-provider decision. Other known data-quality caveats (BBL format divergence, ACRIS condo-lot matching, census tract vintage discontinuities) are documented in `IMPLEMENTATION_PLAN.md` §5.
