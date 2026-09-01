@@ -95,7 +95,7 @@ nicklam.co itself is a separate, already-live Vercel project (`my-site`), not pa
 }
 ```
 
-Scheduled ingestion is separate from both: `.github/workflows/ingest.yml` runs `pluto` then `dob_now` daily via GitHub Actions (PRD §13), using repo secrets `SOCRATA_APP_TOKEN` and `SUPABASE_DB_URL_DIRECT` (the direct connection, not the pooler -- ingestion is a long-lived process, see Risk R7). A failed adapter run exits non-zero and fails the workflow visibly rather than swallowing the error.
+Scheduled ingestion is separate from both: `.github/workflows/ingest.yml` runs `pluto` then `dob_now` daily via GitHub Actions (PRD §13), using repo secrets `SOCRATA_APP_TOKEN` and `SUPABASE_DB_URL_DIRECT`. That secret name is legacy: GitHub Actions runners have no IPv6 egress and Supabase's literal direct-connection host is IPv6-only, so it actually holds a Supabase *session*-pooler connection string (port 5432) -- IPv4-reachable, and still a real persistent session so it avoids the transaction pooler's prepared-statement caveat (see Risk R7 in `IMPLEMENTATION_PLAN.md`). A failed adapter run exits non-zero and fails the workflow visibly rather than swallowing the error.
 
 ## Limitations
 

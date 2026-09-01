@@ -6,6 +6,11 @@ name: Daily ingestion
 # first. Both adapters already return 1 on failure (pipeline/sources/*.py,
 # propagated by pipeline/run.py's sys.exit(main())), so a failed step here
 # fails the job and the workflow run shows red, no extra plumbing needed.
+#
+# SUPABASE_DB_URL_DIRECT holds a Supabase session-pooler string, not a literal
+# direct connection: runners here have no IPv6 egress, and Supabase's direct
+# host is IPv6-only without the paid IPv4 add-on (see IMPLEMENTATION_PLAN.md
+# Risk R7). Var name kept for continuity.
 
 on:
   schedule:
