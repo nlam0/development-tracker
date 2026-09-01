@@ -28,7 +28,9 @@ uvicorn api.main:app --reload              # local API on :8000
 npm run dev / build / lint  # lint is eslint incl. React Compiler hook rules
 ```
 
-Most of the test suite is live-database integration, not mocks — `tests/conftest.py` skips those gracefully when `SUPABASE_DB_URL_*` is unset, so a green `pytest` with no credentials has only run 52 pure tests. Check for skips before treating a pass as meaningful.
+Most of the test suite is live-database integration, not mocks — `tests/conftest.py` skips those gracefully when `SUPABASE_DB_URL_*` is unset, so a green `pytest` with no credentials has only run the pure tests. Check for skips before treating a pass as meaningful.
+
+Tests that **write** to the database are marked `writes_db`. CI (`.github/workflows/ci.yml`) runs `pytest -m "not writes_db"` against a read-only Postgres role (`ci_readonly`, secrets `CI_SUPABASE_DB_URL_*`, distinct from the ingestion workflow's write credentials); the write tests run locally. If you add a test that writes, mark it — otherwise it will fail CI with `InsufficientPrivilege`. Introspect schema metadata through `pg_catalog`, not `information_schema`: the latter's constraint views hide constraints from a SELECT-only role, so they come back empty rather than wrong.
 
 ## Layout
 

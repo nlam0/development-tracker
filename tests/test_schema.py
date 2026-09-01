@@ -23,17 +23,30 @@ EXPECTED_TABLES = {
 }
 
 
-def _constraint_columns(cur, table: str, constraint_type: str) -> list[set[str]]:
+# Constraint introspection goes through pg_catalog rather than
+# information_schema. The information_schema constraint views only expose
+# constraints on tables the caller owns or holds a privilege other than
+# SELECT on, so under CI's read-only role they returned nothing at all and
+# these tests failed with empty result sets rather than real disagreements.
+# pg_constraint is readable by any role, and is the more direct source
+# besides -- `conkey` is the column list, no three-way join required.
+def _constraint_columns(cur, table: str, contype: str) -> list[set[str]]:
+    """Column sets for each constraint of `contype` on `table`.
+
+    contype follows pg_constraint: 'u' unique, 'p' primary key, 'f' foreign key.
+    """
     cur.execute(
         """
-        SELECT tc.constraint_name, kcu.column_name
-        FROM information_schema.table_constraints tc
-        JOIN information_schema.key_column_usage kcu
-          ON tc.constraint_name = kcu.constraint_name AND tc.table_schema = kcu.table_schema
-        WHERE tc.table_schema = 'public' AND tc.table_name = %s AND tc.constraint_type = %s
-        ORDER BY tc.constraint_name, kcu.ordinal_position;
+        SELECT con.conname, att.attname
+        FROM pg_constraint con
+        JOIN pg_class rel ON rel.oid = con.conrelid
+        JOIN pg_namespace nsp ON nsp.oid = rel.relnamespace
+        JOIN unnest(con.conkey) WITH ORDINALITY AS k(attnum, ord) ON TRUE
+        JOIN pg_attribute att ON att.attrelid = rel.oid AND att.attnum = k.attnum
+        WHERE nsp.nspname = 'public' AND rel.relname = %s AND con.contype = %s
+        ORDER BY con.conname, k.ord;
         """,
-        (table, constraint_type),
+        (table, contype),
     )
     by_constraint: dict[str, set[str]] = {}
     for name, col in cur.fetchall():
@@ -53,15 +66,15 @@ def test_all_expected_tables_exist(db_conn):
 
 def test_permits_and_property_records_have_idempotency_constraint(db_conn):
     with db_conn.cursor() as cur:
-        permits_uniques = _constraint_columns(cur, "permits", "UNIQUE")
-        records_uniques = _constraint_columns(cur, "property_records", "UNIQUE")
+        permits_uniques = _constraint_columns(cur, "permits", "u")
+        records_uniques = _constraint_columns(cur, "property_records", "u")
     assert {"source", "external_id"} in permits_uniques
     assert {"source", "external_id"} in records_uniques
 
 
 def test_census_context_composite_primary_key(db_conn):
     with db_conn.cursor() as cur:
-        pk = _constraint_columns(cur, "census_context", "PRIMARY KEY")
+        pk = _constraint_columns(cur, "census_context", "p")
     assert pk == [{"geography_id", "tract_vintage", "year", "variable"}]
 
 
@@ -69,13 +82,16 @@ def test_foreign_keys_reflect_pipeline_load_order(db_conn):
     with db_conn.cursor() as cur:
         cur.execute(
             """
-            SELECT tc.table_name, kcu.column_name, ccu.table_name, ccu.column_name
-            FROM information_schema.table_constraints tc
-            JOIN information_schema.key_column_usage kcu
-              ON tc.constraint_name = kcu.constraint_name AND tc.table_schema = kcu.table_schema
-            JOIN information_schema.constraint_column_usage ccu
-              ON tc.constraint_name = ccu.constraint_name AND tc.table_schema = ccu.table_schema
-            WHERE tc.table_schema = 'public' AND tc.constraint_type = 'FOREIGN KEY';
+            SELECT rel.relname, att.attname, frel.relname, fatt.attname
+            FROM pg_constraint con
+            JOIN pg_class rel ON rel.oid = con.conrelid
+            JOIN pg_namespace nsp ON nsp.oid = rel.relnamespace
+            JOIN pg_class frel ON frel.oid = con.confrelid
+            JOIN unnest(con.conkey, con.confkey)
+                 WITH ORDINALITY AS k(attnum, fattnum, ord) ON TRUE
+            JOIN pg_attribute att ON att.attrelid = rel.oid AND att.attnum = k.attnum
+            JOIN pg_attribute fatt ON fatt.attrelid = frel.oid AND fatt.attnum = k.fattnum
+            WHERE nsp.nspname = 'public' AND con.contype = 'f';
             """
         )
         fks = {(row[0], row[1]): (row[2], row[3]) for row in cur.fetchall()}

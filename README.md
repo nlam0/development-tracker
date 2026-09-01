@@ -95,6 +95,8 @@ nicklam.co itself is a separate, already-live Vercel project (`my-site`), not pa
 }
 ```
 
+`.github/workflows/ci.yml` runs on every push to `main` and every pull request: ruff and pytest for the Python side, `npm run lint` and `npm run build` for the frontend. It deploys nothing — deployment stays CLI-driven. Because most of the suite is live-database integration, CI connects with a dedicated **read-only** Postgres role (`ci_readonly`) via the `CI_SUPABASE_DB_URL_DIRECT` / `CI_SUPABASE_DB_URL_POOLED` secrets, which are deliberately separate from the ingestion workflow's write credentials; without any credentials 58 of 131 tests would skip and a green run would mean very little. The handful of tests that genuinely write are marked `writes_db` and deselected there.
+
 Scheduled ingestion is separate from both: `.github/workflows/ingest.yml` runs `pluto` then `dob_now` daily via GitHub Actions (PRD §13), using repo secrets `SOCRATA_APP_TOKEN` and `SUPABASE_DB_URL_DIRECT`. That secret name is legacy: GitHub Actions runners have no IPv6 egress and Supabase's literal direct-connection host is IPv6-only, so it actually holds a Supabase *session*-pooler connection string (port 5432) -- IPv4-reachable, and still a real persistent session so it avoids the transaction pooler's prepared-statement caveat (see Risk R7 in `IMPLEMENTATION_PLAN.md`). A failed adapter run exits non-zero and fails the workflow visibly rather than swallowing the error.
 
 ## Limitations

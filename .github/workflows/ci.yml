@@ -1,0 +1,80 @@
+name: CI
+
+# Answers one question per commit: did this break anything? Deployment stays
+# CLI-driven and separate (see README) -- nothing here deploys.
+#
+# The database credentials are a distinct, read-only role (ci_readonly), not
+# the ingestion secrets: the point of running CI against the live database is
+# that most of this suite is integration tests, and without credentials 58 of
+# them skip and a green run means almost nothing. A read-only role gets that
+# coverage without giving a pull request the ability to write to the research
+# dataset. Tests that genuinely write are marked `writes_db` (pyproject) and
+# deselected here; they run locally against the write credentials.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch: {}
+
+# A second push supersedes an in-flight run for the same ref -- these are
+# checks, not a deploy queue, so there's nothing to preserve.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  python:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -e ".[dev]"
+
+      - name: Ruff
+        run: ruff check .
+
+      - name: Pytest
+        env:
+          # Mapped from CI_-prefixed secrets so the read-only role can never
+          # be confused with the ingestion workflow's write credentials,
+          # which share these variable names.
+          SUPABASE_DB_URL_DIRECT: ${{ secrets.CI_SUPABASE_DB_URL_DIRECT }}
+          SUPABASE_DB_URL_POOLED: ${{ secrets.CI_SUPABASE_DB_URL_POOLED }}
+        run: pytest -m "not writes_db" -q
+
+  frontend:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Build
+        # NEXT_PUBLIC_API_URL is baked in at build time. Nothing here calls
+        # the API -- every route either prerenders or is dynamic -- but the
+        # variable has to exist for the build to be representative.
+        env:
+          NEXT_PUBLIC_API_URL: http://localhost:8000
+        run: npm run build

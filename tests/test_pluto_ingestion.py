@@ -7,6 +7,8 @@ adapter-side leakage or under-fetching), every row has a usable point
 geometry, and the PLUTO version stays pinned per decision D3.
 """
 
+import pytest
+
 
 def test_parcels_row_count_matches_resolved_study_area_bbls(db_conn):
     with db_conn.cursor() as cur:
@@ -93,10 +95,14 @@ def test_most_recent_pluto_ingestion_run_succeeded(db_conn):
     assert records_rejected == 0
 
 
+@pytest.mark.writes_db
 def test_upsert_tolerates_null_coordinates(db_conn):
     """Regression: under executemany the statement is prepared once, so an
     uncast null coordinate placeholder fails Postgres type inference. D6(b)
     lots have no centroid, making this a normal path rather than an edge case.
+
+    Writes (and rolls back), so it needs write credentials -- CI runs
+    read-only and deselects it. See pyproject's `writes_db` marker.
     """
     from pipeline.load import PARCEL_COLUMNS, upsert_parcels
 
