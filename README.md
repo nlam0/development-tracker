@@ -75,11 +75,22 @@ npm run lint
 
 Two separate Vercel projects, not one -- `api/`'s internal imports (`from api.db import ...`) need the repo root as their deployment root, which doesn't line up with Vercel's single-project convention for a Next.js app plus Python functions sharing one root directory. Splitting them also matches CLAUDE.md's architecture, which already treats `api/` and `web/` as independent halves.
 
-**Both projects deploy via explicit CLI runs only -- neither has GitHub auto-deploy connected.** `division` had it briefly (a default of `vercel link --yes`, easy to miss) and it broke production: a git-triggered deploy always builds from the repo root, so an unrelated push silently redeployed `division` using the *repo-root* `vercel.json` -- the Python API's config, not the Next.js app's. See `IMPLEMENTATION_PLAN.md`'s M7 section for the full incident. To redeploy after a change:
+**Both projects are connected to this GitHub repo and deploy on push to `main`.** Vercel supports multiple projects from one repository, distinguished by each project's **Root Directory** setting -- which is the critical piece here:
+
+| Project | Root Directory | Framework | Builds from |
+|---|---|---|---|
+| `division` | `web` | Next.js | `web/package.json`, auto-detected |
+| `division-api` | `.` (repo root) | Other | root `vercel.json` + `requirements.txt` |
+
+`division-api` must stay at the repo root -- **not** `api/` -- because `api/main.py` uses absolute imports (`from api.db import ...`, `from api.routers import ...`) that need the repo root on the import path, and because the `vercel.json` and `requirements.txt` declaring its Python build live there. (It does not import from `pipeline/`; the constraint is the absolute `api.*` imports.)
+
+Getting `division`'s Root Directory wrong is not hypothetical: it was `.` initially, so a git-triggered build read the *repo-root* `vercel.json` -- the Python API's config -- and deployed the API over the frontend. See `IMPLEMENTATION_PLAN.md`'s M7 section. Set the Root Directory before connecting git, never after.
+
+Manual deploys still work as a fallback:
 
 ```bash
 cd web && vercel deploy --prod --yes       # division
-cd .. && vercel deploy --prod --yes        # division-api (must run from repo root)
+cd ..  && vercel deploy --prod --yes       # division-api (must run from repo root)
 ```
 
 - **`division`** (`web/`) -- the Next.js frontend. Deployed with `web/` as the Vercel project's root directory. **Live:** https://division-theta.vercel.app. `next.config.ts` sets `basePath: "/division"`, since it's hosted at `nicklam.co/division` rather than its own subdomain. `NEXT_PUBLIC_API_URL` is set to `division-api`'s production URL.
