@@ -6,6 +6,7 @@ Scoped to `permits` only -- ACRIS transaction activity joins in at M8.
 """
 
 from datetime import UTC, date, datetime, timedelta
+from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from psycopg import Connection
@@ -18,9 +19,27 @@ router = APIRouter()
 
 WINDOW_DAYS = (7, 30, 90)
 
+# The digest windows are anchored to the current date in New York, not to
+# the server's local date and not to UTC. `permits.event_date` holds NYC
+# calendar dates (DOB issues permits on NYC days), so "the past 7 days"
+# has to mean 7 NYC days for the count to mean what a researcher reads it
+# as. This was previously `date.today()`, which is whatever timezone the
+# process happens to run in: a local uvicorn on Eastern time and a Vercel
+# function on UTC computed different window boundaries from the same
+# database, so the same digest reported 20 permits locally and 16 in
+# production -- the four dated on the boundary day. UTC alone wouldn't fix
+# it either; it would just shift the window a day early every evening
+# between 20:00 ET and midnight.
+NYC = ZoneInfo("America/New_York")
+
+
+def window_start(window_days: int) -> date:
+    """First event_date included in a digest window, anchored to NYC today."""
+    return datetime.now(NYC).date() - timedelta(days=window_days)
+
 
 def _window_stats(conn: Connection, window_days: int, neighborhood: str | None) -> StatsWindow:
-    since = date.today() - timedelta(days=window_days)
+    since = window_start(window_days)
     where = ["event_date >= %s"]
     params: list = [since]
     if neighborhood:
