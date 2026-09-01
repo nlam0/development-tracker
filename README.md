@@ -75,15 +75,15 @@ npm run lint
 
 Two separate Vercel projects, not one -- `api/`'s internal imports (`from api.db import ...`) need the repo root as their deployment root, which doesn't line up with Vercel's single-project convention for a Next.js app plus Python functions sharing one root directory. Splitting them also matches CLAUDE.md's architecture, which already treats `api/` and `web/` as independent halves.
 
-- **`division`** (`web/`) -- the Next.js frontend. Deployed with `web/` as the Vercel project's root directory. `next.config.ts` sets `basePath: "/division"`, since it's hosted at `nicklam.co/division` rather than its own subdomain. Set `NEXT_PUBLIC_API_URL` to the `division-api` project's production URL.
-- **`division-api`** (`api/`) -- the FastAPI backend. Deployed with the *repo root* as the Vercel project's root directory (not `api/`), via the root-level `vercel.json` and `requirements.txt` -- so `api/`'s absolute imports resolve exactly as they do locally, with zero code changes for deployment. Set `SUPABASE_DB_URL_POOLED` (Risk R7) and `CORS_ALLOWED_ORIGINS` (comma-separated; must include `division`'s production URL and, once wired up, `https://nicklam.co`) as environment variables.
+- **`division`** (`web/`) -- the Next.js frontend. Deployed with `web/` as the Vercel project's root directory. **Live:** https://division-theta.vercel.app. `next.config.ts` sets `basePath: "/division"`, since it's hosted at `nicklam.co/division` rather than its own subdomain. `NEXT_PUBLIC_API_URL` is set to `division-api`'s production URL.
+- **`division-api`** (`api/`) -- the FastAPI backend. Deployed with the *repo root* as the Vercel project's root directory (not `api/`), via the root-level `vercel.json` and `requirements.txt` -- so `api/`'s absolute imports resolve exactly as they do locally, with zero code changes for deployment. **Live:** https://division-api-one.vercel.app. `SUPABASE_DB_URL_POOLED` (Risk R7) and `CORS_ALLOWED_ORIGINS` (comma-separated -- currently `division`'s production URL plus `https://nicklam.co` for once the rewrite below is added) are set as environment variables.
 
-nicklam.co itself is a separate, already-live Vercel project (`my-site`), not part of this repo. Making `nicklam.co/division` work means adding a rewrite there once `division` has a production URL:
+nicklam.co itself is a separate, already-live Vercel project (`my-site`), not part of this repo -- not touched here. Making `nicklam.co/division` work needs a rewrite added to that project's own `vercel.json`:
 
 ```json
 {
   "rewrites": [
-    { "source": "/division/:path*", "destination": "https://<division-production-url>/division/:path*" }
+    { "source": "/division/:path*", "destination": "https://division-theta.vercel.app/division/:path*" }
   ]
 }
 ```
