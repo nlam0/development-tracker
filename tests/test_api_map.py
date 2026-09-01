@@ -46,6 +46,66 @@ def test_map_rejects_unknown_category(api_client):
     assert r.status_code == 422
 
 
+def test_map_reports_truncation_when_the_cap_bites(api_client):
+    """The bug this guards: a capped response used to be indistinguishable
+    from a complete one, so the map presented 5,000 of 10,364 permits as
+    the whole study area."""
+    body = api_client.get("/api/map?limit=10").json()
+    assert len(body["features"]) == 10
+    assert body["total"] > 10
+    assert body["truncated"] is True
+
+
+def test_map_reports_no_truncation_when_everything_fits(api_client):
+    body = api_client.get("/api/map?neighborhood=Chinatown&category=demolition").json()
+    assert body["truncated"] is False
+    assert body["total"] == len(body["features"])
+
+
+def test_map_bbox_restricts_to_the_viewport(api_client):
+    """A viewport query must be a strict subset of the unfiltered set, and
+    every point it returns must actually lie inside the box."""
+    west, south, east, north = -73.999, 40.713, -73.993, 40.718
+    body = api_client.get(f"/api/map?bbox={west},{south},{east},{north}").json()
+    assert body["features"]
+    for feature in body["features"]:
+        lon, lat = feature["geometry"]["coordinates"]
+        assert west <= lon <= east
+        assert south <= lat <= north
+
+    unbounded = api_client.get("/api/map").json()
+    assert body["total"] < unbounded["total"]
+
+
+def test_map_bbox_outside_the_study_area_is_empty_not_an_error(api_client):
+    body = api_client.get("/api/map?bbox=-80.0,35.0,-79.0,36.0").json()
+    assert body["features"] == []
+    assert body["total"] == 0
+    assert body["truncated"] is False
+
+
+def test_map_bbox_composes_with_the_shared_filters(api_client):
+    """bbox is map-only, but it has to narrow the same filtered set the feed
+    would produce, not replace it."""
+    bbox = "-74.02,40.70,-73.97,40.73"
+    both = api_client.get(f"/api/map?bbox={bbox}&category=demolition").json()
+    box_only = api_client.get(f"/api/map?bbox={bbox}").json()
+    assert both["total"] <= box_only["total"]
+    assert all(f["properties"]["category"] == "demolition" for f in both["features"])
+
+
+def test_map_rejects_malformed_bbox(api_client):
+    for bad in [
+        "1,2,3",  # wrong arity
+        "a,b,c,d",  # not numbers
+        "-73.99,40.71,-74.02,40.73",  # west >= east
+        "-73.99,40.73,-73.97,40.71",  # south >= north
+        "-200,40,-73,41",  # longitude out of range
+        "-74,40,-73,100",  # latitude out of range
+    ]:
+        assert api_client.get(f"/api/map?bbox={bad}").status_code == 422, bad
+
+
 def test_activity_block_filter_matches_only_that_block(api_client):
     """substring(bbl from 2 for 5) is the block portion (Risk-adjacent
     addition -- see api/filters.py); every returned permit's bbl must carry

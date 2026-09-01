@@ -106,6 +106,10 @@ export interface MapFeature {
 export interface MapFeatureCollection {
   type: "FeatureCollection";
   features: MapFeature[];
+  /** Permits matching the filters (and viewport, if one was sent), before the server's cap. */
+  total: number;
+  /** True when `features` is a subset of `total` -- the map is not showing everything. */
+  truncated: boolean;
 }
 
 export interface StudyAreaFeatureCollection {

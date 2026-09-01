@@ -33,6 +33,7 @@ const MAP_STYLE_URL = "https://tiles.openfreemap.org/styles/positron";
 // pipeline/study_area/resolve.py's BBOX).
 const STUDY_AREA_CENTER: [number, number] = [-73.987, 40.715];
 const INITIAL_ZOOM = 14.5;
+const MOVE_DEBOUNCE_MS = 250;
 
 // maplibre-gl decodes vector tiles in a dedicated module Worker, whose URL
 // it computes at runtime via a bundler-relative import. Turbopack doesn't
@@ -68,6 +69,43 @@ const CATEGORY_COLOR_EXPRESSION = [
   CATEGORY_COLORS.other,
 ] as unknown as maplibregl.DataDrivenPropertyValueSpecification<string>;
 
+/**
+ * Popup body for a spatially-matched permit, built as DOM nodes rather than
+ * an HTML string.
+ *
+ * `address` reaches here from DOB's published records by way of our own
+ * ingestion and API, none of which sanitize it -- it is stored and served as
+ * received (permits.raw keeps the source record verbatim, by design). An
+ * HTML string template would make any markup in an upstream address
+ * executable in the page; setting .textContent cannot. No current address
+ * contains markup, which is exactly why this is worth fixing now rather than
+ * after one does.
+ */
+function popupContent(props: {
+  address: string | null;
+  category: string;
+  event_date: string;
+  estimated_cost: number | null;
+}): HTMLElement {
+  const root = document.createElement("div");
+  root.style.fontSize = "12px";
+
+  const address = document.createElement("strong");
+  address.textContent = props.address ?? "Unknown address";
+
+  const meta = document.createElement("div");
+  meta.textContent = `${props.category} · ${formatDate(props.event_date)}`;
+
+  const cost = document.createElement("div");
+  cost.textContent = formatCurrency(props.estimated_cost);
+
+  const caveat = document.createElement("em");
+  caveat.textContent = "No parcel page -- matched by location, not BBL.";
+
+  root.append(address, meta, cost, caveat);
+  return root;
+}
+
 export default function MapView() {
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -77,22 +115,60 @@ export default function MapView() {
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<MapLibreMap | null>(null);
   const loadedRef = useRef(false);
+  const moveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [mapError, setMapError] = useState<string | null>(null);
+  const [truncated, setTruncated] = useState<{ shown: number; total: number } | null>(null);
+
+  /**
+   * The viewport MapLibre is currently showing, as the API's bbox tuple.
+   *
+   * Returns null rather than a clamped guess when the viewport isn't a
+   * well-formed box -- zoomed far out, getBounds() can report a span wider
+   * than the world or one that wraps the antimeridian, and the API (rightly)
+   * 422s on west >= east. Omitting bbox in that case asks for the whole
+   * study area, which is the correct request at that zoom anyway.
+   */
+  const viewportBbox = useCallback((map: MapLibreMap): [number, number, number, number] | null => {
+    const bounds = map.getBounds();
+    const west = Math.max(bounds.getWest(), -180);
+    const east = Math.min(bounds.getEast(), 180);
+    const south = Math.max(bounds.getSouth(), -90);
+    const north = Math.min(bounds.getNorth(), 90);
+    if (west >= east || south >= north) return null;
+    return [west, south, east, north];
+  }, []);
 
   const refreshPermits = useCallback(() => {
     const map = mapRef.current;
     if (!map) return;
-    getMap(filters)
+    // Ask only for what's on screen. Unbounded, this endpoint caps at 5,000
+    // of the study area's 10,364 permits; at any zoom where individual
+    // markers are legible the viewport holds far fewer than that, so the
+    // response is complete rather than a silent newest-first subset.
+    getMap(filters, viewportBbox(map) ?? undefined)
       .then((collection) => {
         const source = map.getSource("permits") as maplibregl.GeoJSONSource | undefined;
         source?.setData(collection as unknown as GeoJSON.FeatureCollection);
+        setTruncated(
+          collection.truncated
+            ? { shown: collection.features.length, total: collection.total }
+            : null,
+        );
       })
       .catch(() => {
         // Leave the last successfully loaded set on screen rather than
         // clearing markers on a transient fetch failure.
       });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [filterKey]);
+  }, [filterKey, viewportBbox]);
+
+  // The map's "load" handler is registered once and closes over whatever
+  // refreshPermits was current then; the moveend listener it installs has to
+  // call today's version, with today's filters, so it goes through a ref.
+  const refreshPermitsRef = useRef(refreshPermits);
+  useEffect(() => {
+    refreshPermitsRef.current = refreshPermits;
+  }, [refreshPermits]);
 
   useEffect(() => {
     if (!containerRef.current || mapRef.current) return;
@@ -203,17 +279,7 @@ export default function MapView() {
           return;
         }
         const coords = (feature.geometry as GeoJSON.Point).coordinates as [number, number];
-        new maplibregl.Popup()
-          .setLngLat(coords)
-          .setHTML(
-            `<div style="font-size:12px">
-              <strong>${props.address ?? "Unknown address"}</strong><br/>
-              ${props.category} · ${formatDate(props.event_date)}<br/>
-              ${formatCurrency(props.estimated_cost)}<br/>
-              <em>No parcel page -- matched by location, not BBL.</em>
-            </div>`,
-          )
-          .addTo(map);
+        new maplibregl.Popup().setLngLat(coords).setDOMContent(popupContent(props)).addTo(map);
       });
 
       for (const layer of ["clusters", "unclustered-point"]) {
@@ -224,6 +290,14 @@ export default function MapView() {
           map.getCanvas().style.cursor = "";
         });
       }
+
+      // Refetch for the new viewport once a pan/zoom settles. moveend fires
+      // once per gesture, but a flicked pan can chain several; the debounce
+      // keeps that to one request without making the map feel stale.
+      map.on("moveend", () => {
+        if (moveTimerRef.current) clearTimeout(moveTimerRef.current);
+        moveTimerRef.current = setTimeout(() => refreshPermitsRef.current(), MOVE_DEBOUNCE_MS);
+      });
 
       loadedRef.current = true;
       getStudyAreas()
@@ -236,6 +310,7 @@ export default function MapView() {
     });
 
     return () => {
+      if (moveTimerRef.current) clearTimeout(moveTimerRef.current);
       map.remove();
       mapRef.current = null;
       loadedRef.current = false;
@@ -252,6 +327,12 @@ export default function MapView() {
       {mapError && (
         <p className="absolute top-2 left-2 z-10 max-w-md border border-red-700 bg-surface px-2 py-1 text-xs text-red-700">
           Map error: {mapError}
+        </p>
+      )}
+      {truncated && (
+        <p className="absolute bottom-2 left-2 z-10 max-w-md border border-border bg-surface px-2 py-1 text-xs text-muted">
+          Showing the {truncated.shown.toLocaleString()} most recent of{" "}
+          {truncated.total.toLocaleString()} matching permits. Zoom in to see all of them.
         </p>
       )}
       <div ref={containerRef} className="h-[70vh] w-full border border-border" />

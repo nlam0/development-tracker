@@ -56,8 +56,20 @@ export function getActivity(
   return request<ActivityFeedResponse>("/api/activity", params);
 }
 
-export function getMap(filters: FilterState): Promise<MapFeatureCollection> {
-  return request<MapFeatureCollection>("/api/map", filtersToSearchParams(filters));
+/**
+ * `bbox` is the map's current viewport as [west, south, east, north]. It is
+ * map-only (the feed is chronological, not spatial) and optional: omitting
+ * it asks for the whole study area, which the server caps at 5,000 points.
+ * Sending it is what keeps the response complete rather than truncated --
+ * see api/routers/map.py.
+ */
+export function getMap(
+  filters: FilterState,
+  bbox?: [number, number, number, number],
+): Promise<MapFeatureCollection> {
+  const params = filtersToSearchParams(filters);
+  if (bbox) params.set("bbox", bbox.join(","));
+  return request<MapFeatureCollection>("/api/map", params);
 }
 
 export function getStudyAreas(): Promise<StudyAreaFeatureCollection> {

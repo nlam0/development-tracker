@@ -112,8 +112,20 @@ class MapFeature(BaseModel):
 
 
 class MapFeatureCollection(BaseModel):
+    """GeoJSON FeatureCollection plus the two counts the map needs to be honest.
+
+    `total` and `truncated` are GeoJSON foreign members -- the spec permits
+    them, and MapLibre ignores what it doesn't recognize, so this stays
+    directly usable as a GeoJSON source. They exist because the endpoint
+    caps its result set: without them a truncated response is
+    indistinguishable from a complete one, and the map would silently
+    present a subset of the study area as the whole of it.
+    """
+
     type: Literal["FeatureCollection"] = "FeatureCollection"
     features: list[MapFeature]
+    total: int
+    truncated: bool
 
 
 class StudyAreaProperties(BaseModel):
