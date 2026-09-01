@@ -149,7 +149,19 @@ export default function MapView() {
         type: "symbol",
         source: "permits",
         filter: ["has", "point_count"],
-        layout: { "text-field": "{point_count_abbreviated}", "text-size": 11 },
+        layout: {
+          "text-field": "{point_count_abbreviated}",
+          "text-size": 11,
+          // Must name a font the style's glyph endpoint actually serves.
+          // Omitting text-font falls back to the style spec's default
+          // ["Open Sans Regular", "Arial Unicode MS Regular"], which
+          // OpenFreeMap 404s -- MapLibre then renders these codepoints
+          // locally instead, so labels still appear but bypass the glyph
+          // pipeline entirely. Positron's own layers use Noto Sans, which
+          // its endpoint serves. Revisit alongside MAP_STYLE_URL: this
+          // name is only valid for a style whose glyphs provide it.
+          "text-font": ["Noto Sans Regular"],
+        },
         paint: { "text-color": "#ffffff" },
       });
       map.addLayer({
