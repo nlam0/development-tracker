@@ -75,6 +75,13 @@ npm run lint
 
 Two separate Vercel projects, not one -- `api/`'s internal imports (`from api.db import ...`) need the repo root as their deployment root, which doesn't line up with Vercel's single-project convention for a Next.js app plus Python functions sharing one root directory. Splitting them also matches CLAUDE.md's architecture, which already treats `api/` and `web/` as independent halves.
 
+**Both projects deploy via explicit CLI runs only -- neither has GitHub auto-deploy connected.** `division` had it briefly (a default of `vercel link --yes`, easy to miss) and it broke production: a git-triggered deploy always builds from the repo root, so an unrelated push silently redeployed `division` using the *repo-root* `vercel.json` -- the Python API's config, not the Next.js app's. See `IMPLEMENTATION_PLAN.md`'s M7 section for the full incident. To redeploy after a change:
+
+```bash
+cd web && vercel deploy --prod --yes       # division
+cd .. && vercel deploy --prod --yes        # division-api (must run from repo root)
+```
+
 - **`division`** (`web/`) -- the Next.js frontend. Deployed with `web/` as the Vercel project's root directory. **Live:** https://division-theta.vercel.app. `next.config.ts` sets `basePath: "/division"`, since it's hosted at `nicklam.co/division` rather than its own subdomain. `NEXT_PUBLIC_API_URL` is set to `division-api`'s production URL.
 - **`division-api`** (`api/`) -- the FastAPI backend. Deployed with the *repo root* as the Vercel project's root directory (not `api/`), via the root-level `vercel.json` and `requirements.txt` -- so `api/`'s absolute imports resolve exactly as they do locally, with zero code changes for deployment. **Live:** https://division-api-one.vercel.app. `SUPABASE_DB_URL_POOLED` (Risk R7) and `CORS_ALLOWED_ORIGINS` are set as environment variables; the latter is comma-separated and currently `http://localhost:3000,https://division-theta.vercel.app,https://nicklam.co,https://www.nicklam.co` -- `nicklam.co` (no `www`) 308-redirects to `www.nicklam.co`, so the `www` origin is the one that actually matters for a browser landing on `nicklam.co/division`, but both are allowed.
 
