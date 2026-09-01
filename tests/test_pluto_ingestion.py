@@ -82,14 +82,18 @@ def test_parcels_pluto_version_is_pinned(db_conn):
     assert versions == {"26v2"}
 
 
-def test_most_recent_pluto_ingestion_run_succeeded(db_conn):
+def test_most_recent_completed_pluto_ingestion_run_succeeded(db_conn):
+    """The last run that *finished* must have succeeded -- see the DOB NOW
+    counterpart for why an in-flight run is excluded rather than counted as
+    a failure."""
     with db_conn.cursor() as cur:
         cur.execute("""
             SELECT status, records_rejected FROM ingestion_runs
-            WHERE source = 'pluto' ORDER BY started_at DESC LIMIT 1;
+            WHERE source = 'pluto' AND status <> 'running'
+            ORDER BY started_at DESC LIMIT 1;
         """)
         row = cur.fetchone()
-    assert row is not None, "no pluto ingestion_runs row found -- has M3 been run?"
+    assert row is not None, "no completed pluto ingestion_runs row found -- has M3 been run?"
     status, records_rejected = row
     assert status == "success"
     assert records_rejected == 0

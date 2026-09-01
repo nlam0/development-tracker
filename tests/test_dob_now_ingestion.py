@@ -75,14 +75,26 @@ def test_permits_on_block_resolved_lots_are_loaded(db_conn):
         assert cur.fetchone()[0] > 0
 
 
-def test_most_recent_dob_now_ingestion_run_succeeded(db_conn):
+def test_most_recent_completed_dob_now_ingestion_run_succeeded(db_conn):
+    """The last run that *finished* must have succeeded.
+
+    Scoped to completed runs on purpose. Reading the latest row outright
+    made this fail whenever a run happened to be in flight -- which is not
+    a defect in the data, just a 21-minute window each morning during which
+    the newest row legitimately reads 'running'. CI caught exactly that
+    (against a local run, not the cron) and would have flaked daily
+    otherwise. An in-flight run is unfinished, not failed; the question
+    this asks is whether ingestion is healthy, which only a completed run
+    can answer.
+    """
     with db_conn.cursor() as cur:
         cur.execute("""
             SELECT status, records_rejected FROM ingestion_runs
-            WHERE source = 'dob_now' ORDER BY started_at DESC LIMIT 1;
+            WHERE source = 'dob_now' AND status <> 'running'
+            ORDER BY started_at DESC LIMIT 1;
         """)
         row = cur.fetchone()
-    assert row is not None, "no dob_now ingestion_runs row found -- has M4 been run?"
+    assert row is not None, "no completed dob_now ingestion_runs row found -- has M4 been run?"
     status, records_rejected = row
     assert status == "success"
     assert records_rejected == 0
