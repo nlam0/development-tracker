@@ -13,7 +13,7 @@ from psycopg import Connection
 
 from api.db import get_conn
 from api.filters import VALID_NEIGHBORHOODS
-from api.models import BlockActivity, StatsResponse, StatsWindow, TopProject
+from api.models import BlockActivity, DataCoverage, StatsResponse, StatsWindow, TopProject
 
 router = APIRouter()
 
@@ -34,8 +34,16 @@ NYC = ZoneInfo("America/New_York")
 
 
 def window_start(window_days: int) -> date:
-    """First event_date included in a digest window, anchored to NYC today."""
-    return datetime.now(NYC).date() - timedelta(days=window_days)
+    """First event_date included in a digest window, anchored to NYC today.
+
+    `window_days - 1`, not `window_days`: the filter is `event_date >= start`
+    with no upper bound, so the window includes today, and subtracting the
+    full width made a "7 day" window span 8 calendar dates (and 30 -> 31,
+    90 -> 91). Against live data that inflated the 7-day permit count from
+    13 to 16. A digest that presents itself as quantitative research output
+    has to count the number of days it names.
+    """
+    return datetime.now(NYC).date() - timedelta(days=window_days - 1)
 
 
 def _window_stats(conn: Connection, window_days: int, neighborhood: str | None) -> StatsWindow:
@@ -95,6 +103,31 @@ def _window_stats(conn: Connection, window_days: int, neighborhood: str | None) 
     )
 
 
+def _coverage(conn: Connection) -> DataCoverage:
+    """What the digest is actually able to see, so the UI can say so.
+
+    Deliberately not filtered by neighborhood: coverage is a property of the
+    ingested dataset, not of whatever slice the caller is looking at.
+    """
+    with conn.cursor() as cur:
+        cur.execute("SELECT max(event_date) AS latest FROM permits;")
+        latest = cur.fetchone()["latest"]
+        cur.execute(
+            """
+            SELECT max(completed_at) AS last_success
+            FROM ingestion_runs WHERE status = 'success';
+            """
+        )
+        last_success = cur.fetchone()["last_success"]
+
+    lag = (datetime.now(NYC).date() - latest).days if latest else None
+    return DataCoverage(
+        latest_event_date=latest,
+        last_successful_ingest=last_success,
+        reporting_lag_days=lag,
+    )
+
+
 @router.get("/api/stats", response_model=StatsResponse)
 def get_stats(
     neighborhood: str | None = Query(None),
@@ -107,4 +140,8 @@ def get_stats(
             f"expected one of {sorted(VALID_NEIGHBORHOODS)}",
         )
     windows = {str(d): _window_stats(conn, d, neighborhood) for d in WINDOW_DAYS}
-    return StatsResponse(generated_at=datetime.now(UTC), windows=windows)
+    return StatsResponse(
+        generated_at=datetime.now(UTC),
+        coverage=_coverage(conn),
+        windows=windows,
+    )

@@ -14,8 +14,32 @@ import type { StatsResponse } from "@/lib/types";
 
 const WINDOWS: ("7" | "30" | "90")[] = ["7", "30", "90"];
 
+/**
+ * One sentence stating how much of each window the data actually covers.
+ *
+ * DOB publishes filings several days after the fact, so the most recent
+ * days of any window are systematically empty -- not quiet. Without this,
+ * "13 permits in the past 7 days" reads as a 7-day observation when it is
+ * closer to a 3-day one, and a researcher would draw a trend from the
+ * reporting pipeline rather than from the neighborhood.
+ */
+function coverageNote(stats: StatsResponse): string | null {
+  const { latest_event_date, reporting_lag_days } = stats.coverage;
+  if (!latest_event_date || reporting_lag_days === null) return null;
+  if (reporting_lag_days <= 0) return `Permit data current through ${latest_event_date}.`;
+  const days = reporting_lag_days === 1 ? "day" : "days";
+  return (
+    `Permit data current through ${latest_event_date} -- ` +
+    `the most recent ${reporting_lag_days} ${days} are not yet reported by DOB, ` +
+    `so each window counts fewer days than it names.`
+  );
+}
+
 function digestText(stats: StatsResponse): string {
-  const lines = [`Development activity digest -- generated ${stats.generated_at}`, ""];
+  const lines = [`Development activity digest -- generated ${stats.generated_at}`];
+  const coverage = coverageNote(stats);
+  if (coverage) lines.push(coverage);
+  lines.push("");
   for (const w of WINDOWS) {
     const win = stats.windows[w];
     lines.push(
@@ -89,7 +113,8 @@ export default function DigestPanel() {
           );
         })}
       </div>
-      <p className="mt-2 text-xs text-muted">{stats.study_area_note}</p>
+      {coverageNote(stats) && <p className="mt-2 text-xs text-muted">{coverageNote(stats)}</p>}
+      <p className="mt-1 text-xs text-muted">{stats.study_area_note}</p>
     </div>
   );
 }

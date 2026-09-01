@@ -169,10 +169,29 @@ class StatsWindow(BaseModel):
     blocks_with_multiple_filings: list[BlockActivity]
 
 
+class DataCoverage(BaseModel):
+    """How far the ingested data actually reaches, and how fresh our copy is.
+
+    These are different questions and the gap between them matters. DOB
+    publishes a filing days after the fact, so `latest_event_date` trails
+    today even when ingestion ran successfully this morning: a digest
+    window ending today includes trailing dates the dataset has no
+    coverage for yet. Reporting a count against those days without saying
+    so overstates a slowdown that is really just reporting lag.
+    """
+
+    latest_event_date: date | None
+    last_successful_ingest: datetime | None
+    # Whole days between the newest permit on file and NYC today. The
+    # trailing part of every window that is not yet covered.
+    reporting_lag_days: int | None
+
+
 class StatsResponse(BaseModel):
     generated_at: datetime
     study_area_note: str = (
         "Study-area boundaries are researcher-defined, not official city "
         "geography -- see /methodology."
     )
+    coverage: DataCoverage
     windows: dict[str, StatsWindow]

@@ -146,7 +146,14 @@ export interface StatsWindow {
   blocks_with_multiple_filings: BlockActivity[];
 }
 
+export interface DataCoverage {
+  latest_event_date: string | null;
+  last_successful_ingest: string | null;
+  reporting_lag_days: number | null;
+}
+
 export interface StatsResponse {
+  coverage: DataCoverage;
   generated_at: string;
   study_area_note: string;
   windows: Record<"7" | "30" | "90", StatsWindow>;
