@@ -11,9 +11,14 @@ export default function NavBar() {
   return (
     <header className="border-b border-border bg-surface">
       <div className="mx-auto flex max-w-6xl items-center justify-between px-4 py-3">
-        <Link href="/" className="text-sm font-semibold tracking-tight">
-          Lower Manhattan Development Tracker
-        </Link>
+        <div className="flex items-center gap-4">
+          <a href="https://nicklam.co" className="text-sm text-muted hover:text-foreground">
+            ← nicklam.co
+          </a>
+          <Link href="/" className="text-sm font-semibold tracking-tight">
+            Lower Manhattan Development Tracker
+          </Link>
+        </div>
         <nav className="flex gap-5 text-sm text-muted">
           {LINKS.map((link) => (
             <Link key={link.href} href={link.href} className="hover:text-foreground">
